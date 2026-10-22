@@ -173,36 +173,29 @@ class Normalizer(RunningMeanStd):
                 torch.vstack(tuple(policy_batch) + tuple(expert_batch)).cpu().numpy())
 
 def quaternion_slerp(q0, q1, fraction, spin=0, shortestpath=True):
-    """Batch quaternion spherical linear interpolation."""
-
-    out = torch.zeros_like(q0)
-
-    zero_mask = torch.isclose(fraction, torch.zeros_like(fraction)).squeeze()
-    ones_mask = torch.isclose(fraction, torch.ones_like(fraction)).squeeze()
-    out[zero_mask] = q0[zero_mask]
-    out[ones_mask] = q1[ones_mask]
-
-    d = torch.sum(q0 * q1, dim=-1, keepdim=True)
-    dist_mask = (torch.abs(torch.abs(d) - 1.0) < _EPS).squeeze()
-    out[dist_mask] = q0[dist_mask]
-
+    """Interpolate unit quaternions without mutating inputs or producing acos NaNs."""
+    eps = torch.finfo(q0.dtype).eps
+    q0 = q0 / q0.norm(dim=-1, keepdim=True).clamp_min(eps)
+    q1 = q1 / q1.norm(dim=-1, keepdim=True).clamp_min(eps)
+    dot = (q0 * q1).sum(dim=-1, keepdim=True)
     if shortestpath:
-        d_old = torch.clone(d)
-        d = torch.where(d_old < 0, -d, d)
-        q1 = torch.where(d_old < 0, -q1, q1)
+        q1 = torch.where(dot < 0, -q1, q1)
+        dot = dot.abs()
+    dot = dot.clamp(-1.0, 1.0)
 
-    angle = torch.acos(d) + spin * torch.pi
-    angle_mask = (torch.abs(angle) < _EPS).squeeze()
-    out[angle_mask] = q0[angle_mask]
-
-    final_mask = torch.logical_or(zero_mask, ones_mask)
-    final_mask = torch.logical_or(final_mask, dist_mask)
-    final_mask = torch.logical_or(final_mask, angle_mask)
-    final_mask = torch.logical_not(final_mask)
-
-    isin = 1.0 / angle
-    q0 *= torch.sin((1.0 - fraction) * angle) * isin
-    q1 *= torch.sin(fraction * angle) * isin
-    q0 += q1
-    out[final_mask] = q0[final_mask]
-    return out
+    # Use a tangent on the quaternion sphere. Exactly antipodal inputs need a
+    # deterministic perpendicular direction when shortestpath=False.
+    tangent = q1 - dot * q0
+    tangent_norm = tangent.norm(dim=-1, keepdim=True)
+    axis = torch.zeros_like(q0).scatter_(-1, q0.abs().argmin(dim=-1, keepdim=True), 1.0)
+    fallback = axis - (axis * q0).sum(dim=-1, keepdim=True) * q0
+    fallback = fallback / fallback.norm(dim=-1, keepdim=True).clamp_min(eps)
+    tangent = torch.where(tangent_norm > eps, tangent / tangent_norm.clamp_min(eps), fallback)
+    angle = torch.acos(dot) + spin * torch.pi
+    out = torch.cos(fraction * angle) * q0 + torch.sin(fraction * angle) * tangent
+    if spin == 0:
+        linear = (1.0 - fraction) * q0 + fraction * q1
+        out = torch.where(dot > 0.9995, linear, out)
+    out = out / out.norm(dim=-1, keepdim=True).clamp_min(eps)
+    out = torch.where(fraction == 0, q0, out)
+    return torch.where(fraction == 1, q1, out)
