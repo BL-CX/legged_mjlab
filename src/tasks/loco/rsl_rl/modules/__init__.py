@@ -29,3 +29,4 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 from .him_actor_critic import HIMActorCritic
+from .him_amp_actor_critic import HIMAMPActorCritic

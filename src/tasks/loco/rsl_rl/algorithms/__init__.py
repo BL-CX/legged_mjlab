@@ -29,3 +29,5 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 from .him_ppo import HIMPPO
+from .amp_discriminator import AMPDiscriminator
+from .him_amp_ppo import HIMAMPPPO
