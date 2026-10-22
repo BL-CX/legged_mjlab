@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+from pathlib import Path
 from typing import Literal
 
 from ...rsl_rl.config import (
+    HIMAMPOnPolicyRunnerCfg,
+    HIMAMPActorCriticCfg,
+    HIMAMPPPOAlgorithmCfg,
     HIMActorCriticCfg,
     HIMOnPolicyRunnerCfg,
     HIMPPOAlgorithmCfg,
 )
 
 
+_GO2_MOTION_DIR = Path(__file__).resolve().parents[4] / "assets/motions/mocap_motions_go2"
 
 
 def him_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> HIMOnPolicyRunnerCfg:
@@ -44,4 +50,27 @@ def him_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> HIMOnPolicyRu
             desired_kl=0.01,
             max_grad_norm=1.0,
         ),
+    )
+
+
+def him_amp_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> HIMAMPOnPolicyRunnerCfg:
+    """Use the HIM PPO settings with HimLoco-AMP-Lab's AMP defaults.
+
+    Use the bundled Go2 mocap motions by default. Override them through
+    --agent.amp-motion-files when launching training.
+    """
+    him = him_runner_cfg(terrain)
+    return HIMAMPOnPolicyRunnerCfg(
+        num_steps_per_env=him.num_steps_per_env,
+        max_iterations=him.max_iterations,
+        save_interval=him.save_interval,
+        experiment_name=f"go2_him_amp_{terrain}",
+        policy=HIMAMPActorCriticCfg(**asdict(him.policy)),
+        algorithm=HIMAMPPPOAlgorithmCfg(**asdict(him.algorithm)),
+        amp_motion_files=[str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))],
+        reorder_motion_data=False,
+        amp_reward_coef=0.15,
+        amp_num_preload_transitions=200_000,
+        amp_discr_hidden_dims=[1024, 512],
+        min_normalized_std=[0.01] * 12,
     )

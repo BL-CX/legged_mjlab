@@ -167,7 +167,17 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             enable_corruption=False,
             history_length=0,
         ),
-
+        "amp": ObservationGroupCfg(
+            terms={
+                "state": ObservationTermCfg(
+                    func=mdp.amp_observations,
+                    params={"asset_cfg": SceneEntityCfg("robot")},
+                ),
+            },
+            concatenate_terms=True,
+            enable_corruption=False,
+            history_length=0,
+        ),
     }
 
     ##

@@ -14,6 +14,28 @@ if TYPE_CHECKING:
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
+def amp_observations(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Raw AMP state: joint positions, body linear/angular velocity, joint velocity.
+
+    Go2 produces 30 values (12 + 3 + 3 + 12), matching AMPMotionLoader's preloaded
+    expert states. Joint positions are absolute; no policy scales or offsets
+    are applied. Joint selection/order follows asset_cfg for both joint fields.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    return torch.cat(
+        (
+            asset.data.joint_pos[:, asset_cfg.joint_ids],
+            asset.data.root_link_lin_vel_b,
+            asset.data.root_link_ang_vel_b,
+            asset.data.joint_vel[:, asset_cfg.joint_ids],
+        ),
+        dim=-1,
+    )
+
+
 def base_external_force(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg,
