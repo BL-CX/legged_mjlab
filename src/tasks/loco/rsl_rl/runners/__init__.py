@@ -30,3 +30,5 @@
 
 from .him_on_policy_runner import HIMOnPolicyRunner
 from .him_amp_on_policy_runner import HIMAMPOnPolicyRunner
+from .dreamwaq_on_policy_runner import DreamWaQOnPolicyRunner
+from .dreamwaq_amp_on_policy_runner import DreamWaQAMPOnPolicyRunner

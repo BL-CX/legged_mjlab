@@ -1,11 +1,17 @@
-"""Register Unitree Go2 HIM and HIM-AMP tasks."""
+"""Register Unitree Go2 HIM and DreamWaQ tasks."""
 
 from mjlab.tasks.registry import register_mjlab_task
 
-from src.tasks.loco.rsl_rl.runners import HIMAMPOnPolicyRunner, HIMOnPolicyRunner
+from src.tasks.loco.rsl_rl.runners import (
+    HIMAMPOnPolicyRunner, HIMOnPolicyRunner,
+    DreamWaQOnPolicyRunner, DreamWaQAMPOnPolicyRunner,
+)
 
 from .env_cfgs import flat_env_cfg, rough_env_cfg
-from .rl_cfg import him_amp_runner_cfg, him_runner_cfg
+from .rl_cfg import (
+    him_amp_runner_cfg, him_runner_cfg,
+    dreamwaq_runner_cfg, dreamwaq_amp_runner_cfg,
+)
 
 
 register_mjlab_task(
@@ -39,3 +45,36 @@ register_mjlab_task(
     rl_cfg=him_amp_runner_cfg(terrain="flat"),
     runner_cls=HIMAMPOnPolicyRunner,
 )
+
+register_mjlab_task(
+    task_id="go2-dwaq-rough",
+    env_cfg=rough_env_cfg(),
+    play_env_cfg=rough_env_cfg(play=True),
+    rl_cfg=dreamwaq_runner_cfg(terrain="rough"),
+    runner_cls=DreamWaQOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-dwaq-flat",
+    env_cfg=flat_env_cfg(),
+    play_env_cfg=flat_env_cfg(play=True),
+    rl_cfg=dreamwaq_runner_cfg(terrain="flat"),
+    runner_cls=DreamWaQOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-dwaq-amp-rough",
+    env_cfg=rough_env_cfg(),
+    play_env_cfg=rough_env_cfg(play=True),
+    rl_cfg=dreamwaq_amp_runner_cfg(terrain="rough"),
+    runner_cls=DreamWaQAMPOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-dwaq-amp-flat",
+    env_cfg=flat_env_cfg(),
+    play_env_cfg=flat_env_cfg(play=True),
+    rl_cfg=dreamwaq_amp_runner_cfg(terrain="flat"),
+    runner_cls=DreamWaQAMPOnPolicyRunner,
+)
+

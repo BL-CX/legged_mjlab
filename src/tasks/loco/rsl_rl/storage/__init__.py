@@ -4,3 +4,4 @@
 from .him_rollout_storage import HIMRolloutStorage
 from .replay_buffer import ReplayBuffer
 from .him_amp_rollout_storage import HIMAMPRolloutStorage
+from .dreamwaq_rollout_storage import DreamWaQRolloutStorage

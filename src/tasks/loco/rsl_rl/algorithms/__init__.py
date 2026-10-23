@@ -31,3 +31,5 @@
 from .him_ppo import HIMPPO
 from .amp_discriminator import AMPDiscriminator
 from .him_amp_ppo import HIMAMPPPO
+from .dreamwaq_ppo import DreamWaQPPO
+from .dreamwaq_amp_ppo import DreamWaQAMPPPO

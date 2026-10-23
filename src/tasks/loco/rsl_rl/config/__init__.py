@@ -1,4 +1,4 @@
-"""Initialization configuration for HIM and HIM-AMP only."""
+"""Training configurations for HIM and DreamWaQ variants."""
 
 from .him_cfg import (
     HIMAMPOnPolicyRunnerCfg,
@@ -13,3 +13,14 @@ __all__ = [
     "HIMActorCriticCfg", "HIMPPOAlgorithmCfg", "HIMOnPolicyRunnerCfg",
     "HIMAMPActorCriticCfg", "HIMAMPPPOAlgorithmCfg", "HIMAMPOnPolicyRunnerCfg",
 ]
+
+from .dreamwaq_cfg import (
+    DreamWaQActorCriticCfg,
+    DreamWaQPPOAlgorithmCfg,
+    DreamWaQOnPolicyRunnerCfg,
+    DreamWaQAMPActorCriticCfg,
+    DreamWaQAMPPPOAlgorithmCfg,
+    DreamWaQAMPOnPolicyRunnerCfg,
+)
+
+__all__ += ['DreamWaQActorCriticCfg', 'DreamWaQPPOAlgorithmCfg', 'DreamWaQOnPolicyRunnerCfg', 'DreamWaQAMPActorCriticCfg', 'DreamWaQAMPPPOAlgorithmCfg', 'DreamWaQAMPOnPolicyRunnerCfg']

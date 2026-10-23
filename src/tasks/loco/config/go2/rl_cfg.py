@@ -1,12 +1,18 @@
-"""Go2 HIM and HIM-AMP training configurations."""
+"""Go2 HIM and DreamWaQ training configurations."""
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
 from ...rsl_rl.config import (
+    DreamWaQActorCriticCfg,
+    DreamWaQPPOAlgorithmCfg,
+    DreamWaQOnPolicyRunnerCfg,
+    DreamWaQAMPActorCriticCfg,
+    DreamWaQAMPPPOAlgorithmCfg,
+    DreamWaQAMPOnPolicyRunnerCfg,
+
     HIMAMPOnPolicyRunnerCfg,
     HIMAMPActorCriticCfg,
     HIMAMPPPOAlgorithmCfg,
@@ -54,19 +60,130 @@ def him_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> HIMOnPolicyRu
 
 
 def him_amp_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> HIMAMPOnPolicyRunnerCfg:
-    """Use the HIM PPO settings with HimLoco-AMP-Lab's AMP defaults.
-
-    Use the bundled Go2 mocap motions by default. Override them through
-    --agent.amp-motion-files when launching training.
-    """
-    him = him_runner_cfg(terrain)
+    """Explicit Go2 HIM-AMP training settings."""
     return HIMAMPOnPolicyRunnerCfg(
-        num_steps_per_env=him.num_steps_per_env,
-        max_iterations=him.max_iterations,
-        save_interval=him.save_interval,
+        num_steps_per_env=24,
+        max_iterations=50000,
+        save_interval=100,
         experiment_name=f"go2_him_amp_{terrain}",
-        policy=HIMAMPActorCriticCfg(**asdict(him.policy)),
-        algorithm=HIMAMPPPOAlgorithmCfg(**asdict(him.algorithm)),
+        policy=HIMAMPActorCriticCfg(
+            actor_hidden_dims=[512, 256, 128],
+            critic_hidden_dims=[512, 256, 128],
+            init_noise_std=1.0,
+            activation="elu",
+        ),
+        algorithm=HIMAMPPPOAlgorithmCfg(
+            value_loss_coef=1.0,
+            use_clipped_value_loss=True,
+            clip_param=0.2,
+            entropy_coef=0.01,
+            num_learning_epochs=5,
+            num_mini_batches=4,
+            learning_rate=1.0e-3,
+            schedule="adaptive",
+            gamma=0.99,
+            lam=0.95,
+            desired_kl=0.01,
+            max_grad_norm=1.0,
+
+            # AMP settings
+            amp_replay_buffer_size=1_000_000,
+        ),
+
+        # AMP settings
+        amp_motion_files=[str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))],
+        reorder_motion_data=False,
+        amp_reward_coef=0.15,
+        amp_num_preload_transitions=200_000,
+        amp_discr_hidden_dims=[1024, 512],
+        min_normalized_std=[0.01] * 12,
+    )
+
+
+def dreamwaq_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> DreamWaQOnPolicyRunnerCfg:
+    """Explicit Go2 DREAMWAQ training settings."""
+    return DreamWaQOnPolicyRunnerCfg(
+        num_steps_per_env=24,
+        max_iterations=50000,
+        save_interval=100,
+        experiment_name=f"go2_dreamwaq_{terrain}",
+        policy=DreamWaQActorCriticCfg(
+            actor_hidden_dims=[512, 256, 128],
+            critic_hidden_dims=[512, 256, 128],
+            init_noise_std=1.0,
+            activation="elu",
+
+            # vae settings
+            num_latent_dims=16,
+            num_explicit_dims=3,
+        ),
+        algorithm=DreamWaQPPOAlgorithmCfg(
+            value_loss_coef=1.0,
+            use_clipped_value_loss=True,
+            clip_param=0.2,
+            entropy_coef=0.01,
+            num_learning_epochs=5,
+            num_mini_batches=4,
+            learning_rate=1.0e-3,
+            schedule="adaptive",
+            gamma=0.99,
+            lam=0.95,
+            desired_kl=0.01,
+            max_grad_norm=1.0,
+
+            # vae settings
+            vae_learning_rate=1.0e-3,
+            vae_kl_weight=1.0,
+
+            # Symmetry loss settings
+            sym_loss=False,
+            sym_coef=1.0,
+            frame_stack=5,
+        ),
+    )
+
+
+def dreamwaq_amp_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> DreamWaQAMPOnPolicyRunnerCfg:
+    """Explicit Go2 DREAMWAQ-AMP training settings."""
+    return DreamWaQAMPOnPolicyRunnerCfg(
+        num_steps_per_env=24,
+        max_iterations=50000,
+        save_interval=100,
+        experiment_name=f"go2_dreamwaq_amp_{terrain}",
+        policy=DreamWaQAMPActorCriticCfg(
+            actor_hidden_dims=[512, 256, 128],
+            critic_hidden_dims=[512, 256, 128],
+            init_noise_std=1.0,
+            activation="elu",
+
+            # vae settings
+            num_latent_dims=16,
+            num_explicit_dims=3,
+        ),
+        algorithm=DreamWaQAMPPPOAlgorithmCfg(
+            value_loss_coef=1.0,
+            use_clipped_value_loss=True,
+            clip_param=0.2,
+            entropy_coef=0.01,
+            num_learning_epochs=5,
+            num_mini_batches=4,
+            learning_rate=1.0e-3,
+            schedule="adaptive",
+            gamma=0.99,
+            lam=0.95,
+            desired_kl=0.01,
+            max_grad_norm=1.0,
+
+            # vae settings
+            vae_learning_rate=1.0e-3,
+            vae_kl_weight=1.0,
+            sym_loss=False,
+            sym_coef=1.0,
+            frame_stack=5,
+            # AMP settings
+            amp_replay_buffer_size=1_000_000,
+        ),
+        # AMP settings
         amp_motion_files=[str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))],
         reorder_motion_data=False,
         amp_reward_coef=0.15,
