@@ -30,3 +30,4 @@
 
 from .him_actor_critic import HIMActorCritic
 from .him_amp_actor_critic import HIMAMPActorCritic
+from .dreamwaq_actor_critic import DreamWaQActorCritic
