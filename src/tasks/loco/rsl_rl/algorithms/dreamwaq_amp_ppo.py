@@ -287,7 +287,7 @@ class DreamWaQAMPPPO:
 
                 vel_estimation_loss=nn.MSELoss()(code_vel*live_batch,vel_target*live_batch) 
                 recon_loss= nn.MSELoss()(decode*live_batch,decode_target*live_batch)
-                kl_loss= -0.5 *  torch.mean(torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=-1)* live_batch)
+                kl_loss= -0.5 *  torch.mean(torch.sum(1 + logvar_latent - mean_latent.pow(2) - logvar_latent.exp(), dim=-1)* live_batch.squeeze(-1).float())
                 vae_loss=vel_estimation_loss+recon_loss+self.bata*kl_loss
                 self.vae_optimizer.zero_grad()
                 vae_loss.backward()
