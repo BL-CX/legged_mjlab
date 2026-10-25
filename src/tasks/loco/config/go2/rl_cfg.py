@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Literal
 
 from ...rsl_rl.config import (
+    CTSActorCriticCfg,
+    CTSAlgorithmCfg,
+    CTSOnPolicyRunnerCfg,
+    CTSAMPActorCriticCfg,
+    CTSAMPAlgorithmCfg,
+    CTSAMPOnPolicyRunnerCfg,
+
     DreamWaQActorCriticCfg,
     DreamWaQPPOAlgorithmCfg,
     DreamWaQOnPolicyRunnerCfg,
@@ -93,7 +100,7 @@ def him_amp_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> HIMAMPOnP
         # AMP settings
         amp_motion_files=[str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))],
         reorder_motion_data=False,
-        amp_reward_coef=0.15,
+        amp_reward_coef=0.5,
         amp_num_preload_transitions=200_000,
         amp_discr_hidden_dims=[1024, 512],
         min_normalized_std=[0.01] * 12,
@@ -186,8 +193,91 @@ def dreamwaq_amp_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> Drea
         # AMP settings
         amp_motion_files=[str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))],
         reorder_motion_data=False,
-        amp_reward_coef=0.15,
+        amp_reward_coef=0.5,
         amp_num_preload_transitions=200_000,
         amp_discr_hidden_dims=[1024, 512],
         min_normalized_std=[0.01] * 12,
+    )
+
+
+def cts_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> CTSOnPolicyRunnerCfg:
+    """Go2 CTS settings with separate teacher PPO and student distillation."""
+    return CTSOnPolicyRunnerCfg(
+        num_steps_per_env=24,
+        max_iterations=20000,
+        save_interval=500,
+        experiment_name=f"go2_cts_{terrain}",
+        policy=CTSActorCriticCfg(
+            actor_hidden_dims=[512, 256, 128],
+            critic_hidden_dims=[512, 256, 128],
+            teacher_encoder_hidden_dims=[512, 256],
+            student_encoder_hidden_dims=[512, 256],
+            init_noise_std=1.0,
+            activation="elu",
+            latent_dim=32,
+            norm_type="l2norm",
+        ),
+        algorithm=CTSAlgorithmCfg(
+            value_loss_coef=1.0,
+            use_clipped_value_loss=True,
+            clip_param=0.2,
+            entropy_coef=0.01,
+            num_learning_epochs=5,
+            num_mini_batches=4,
+            learning_rate=1.0e-3,
+            student_encoder_learning_rate=1.0e-3,
+            schedule="adaptive",
+            gamma=0.99,
+            lam=0.95,
+            desired_kl=0.01,
+            max_grad_norm=1.0,
+            teacher_env_ratio=0.75,
+            sym_loss=False,
+            frame_stack=5,
+        ),
+    )
+
+
+def cts_amp_runner_cfg(terrain: Literal["rough", "flat"] = "rough") -> CTSAMPOnPolicyRunnerCfg:
+    """Go2 CTS settings with separate teacher PPO and student distillation."""
+    return CTSAMPOnPolicyRunnerCfg(
+        num_steps_per_env=24,
+        max_iterations=20000,
+        save_interval=500,
+        experiment_name=f"go2_cts_amp_{terrain}",
+        policy=CTSAMPActorCriticCfg(
+            actor_hidden_dims=[512, 256, 128],
+            critic_hidden_dims=[512, 256, 128],
+            teacher_encoder_hidden_dims=[512, 256],
+            student_encoder_hidden_dims=[512, 256],
+            init_noise_std=1.0,
+            activation="elu",
+            latent_dim=32,
+            norm_type="l2norm",
+        ),
+        algorithm=CTSAMPAlgorithmCfg(
+            value_loss_coef=1.0,
+            use_clipped_value_loss=True,
+            clip_param=0.2,
+            entropy_coef=0.01,
+            num_learning_epochs=5,
+            num_mini_batches=4,
+            learning_rate=1.0e-3,
+            student_encoder_learning_rate=1.0e-3,
+            schedule="adaptive",
+            gamma=0.99,
+            lam=0.95,
+            desired_kl=0.01,
+            max_grad_norm=1.0,
+            teacher_env_ratio=0.75,
+            sym_loss=False,
+            frame_stack=5,
+            amp_replay_buffer_size=1_000_000,
+        ),
+        amp_motion_files=[str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))],
+        reorder_motion_data=False,
+        amp_reward_coef=0.5,
+        amp_num_preload_transitions=2_000_000,
+        amp_discr_hidden_dims=[1024, 512],
+        min_normalized_std=[0.05] * 12,
     )

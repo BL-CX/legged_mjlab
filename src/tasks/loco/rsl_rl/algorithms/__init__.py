@@ -33,3 +33,5 @@ from .amp_discriminator import AMPDiscriminator
 from .him_amp_ppo import HIMAMPPPO
 from .dreamwaq_ppo import DreamWaQPPO
 from .dreamwaq_amp_ppo import DreamWaQAMPPPO
+from .cts import CTS
+from .cts_amp import CTSAMP
