@@ -3,12 +3,15 @@
 from mjlab.tasks.registry import register_mjlab_task
 
 from src.tasks.loco.rsl_rl.runners import (
+    CTSOnPolicyRunner, CTSAMPOnPolicyRunner,
     HIMAMPOnPolicyRunner, HIMOnPolicyRunner,
     DreamWaQOnPolicyRunner, DreamWaQAMPOnPolicyRunner,
 )
 
 from .env_cfgs import flat_env_cfg, rough_env_cfg
+from .cts_env_cfgs import cts_flat_env_cfg, cts_rough_env_cfg
 from .rl_cfg import (
+    cts_runner_cfg, cts_amp_runner_cfg,
     him_amp_runner_cfg, him_runner_cfg,
     dreamwaq_runner_cfg, dreamwaq_amp_runner_cfg,
 )
@@ -76,5 +79,37 @@ register_mjlab_task(
     play_env_cfg=flat_env_cfg(play=True),
     rl_cfg=dreamwaq_amp_runner_cfg(terrain="flat"),
     runner_cls=DreamWaQAMPOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-cts-rough",
+    env_cfg=cts_rough_env_cfg(),
+    play_env_cfg=cts_rough_env_cfg(play=True),
+    rl_cfg=cts_runner_cfg(terrain="rough"),
+    runner_cls=CTSOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-cts-flat",
+    env_cfg=cts_flat_env_cfg(),
+    play_env_cfg=cts_flat_env_cfg(play=True),
+    rl_cfg=cts_runner_cfg(terrain="flat"),
+    runner_cls=CTSOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-cts-amp-rough",
+    env_cfg=cts_rough_env_cfg(),
+    play_env_cfg=cts_rough_env_cfg(play=True),
+    rl_cfg=cts_amp_runner_cfg(terrain="rough"),
+    runner_cls=CTSAMPOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="go2-cts-amp-flat",
+    env_cfg=cts_flat_env_cfg(),
+    play_env_cfg=cts_flat_env_cfg(play=True),
+    rl_cfg=cts_amp_runner_cfg(terrain="flat"),
+    runner_cls=CTSAMPOnPolicyRunner,
 )
 
