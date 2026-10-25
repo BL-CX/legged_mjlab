@@ -24,3 +24,14 @@ from .dreamwaq_cfg import (
 )
 
 __all__ += ['DreamWaQActorCriticCfg', 'DreamWaQPPOAlgorithmCfg', 'DreamWaQOnPolicyRunnerCfg', 'DreamWaQAMPActorCriticCfg', 'DreamWaQAMPPPOAlgorithmCfg', 'DreamWaQAMPOnPolicyRunnerCfg']
+
+from .cts_cfg import (
+    CTSActorCriticCfg,
+    CTSAlgorithmCfg,
+    CTSOnPolicyRunnerCfg,
+    CTSAMPActorCriticCfg,
+    CTSAMPAlgorithmCfg,
+    CTSAMPOnPolicyRunnerCfg,
+)
+
+__all__ += ['CTSActorCriticCfg', 'CTSAlgorithmCfg', 'CTSOnPolicyRunnerCfg', 'CTSAMPActorCriticCfg', 'CTSAMPAlgorithmCfg', 'CTSAMPOnPolicyRunnerCfg']
