@@ -62,7 +62,7 @@ GO2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
 
 
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.32),
+    pos=(0.0, 0.0, 0.40),
     joint_pos={
         ".*thigh_joint": 0.9,
         ".*calf_joint": -1.8,
