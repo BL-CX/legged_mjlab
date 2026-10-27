@@ -20,6 +20,10 @@ from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 from src.tasks.loco.wrappers import LocoVecEnvWrapper
+from src.tasks.loco.rsl_rl.utils.export_policy import (
+  export_policy_as_jit,
+  export_policy_as_onnx,
+)
 
 @dataclass(frozen=True)
 class PlayConfig:
@@ -194,6 +198,11 @@ def run_play(task_id: str, cfg: PlayConfig):
     runner = runner_cls(env, asdict(agent_cfg), device=device)
     runner.load(str(resume_path), load_optimizer=False)
     policy = runner.get_inference_policy(device=device)
+
+    model = runner.alg.get_policy()
+    export_dir = resume_path.parent / "exported" / resume_path.stem
+    export_policy_as_jit(model, export_dir)
+    export_policy_as_onnx(model, export_dir)
 
   # Handle "auto" viewer selection.
   if cfg.viewer == "auto":
