@@ -176,14 +176,8 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             terms=noisy_proprio,
             concatenate_terms=True,
             enable_corruption=not play,
-            history_length=1,
-        ),
-        "proprio_history": ObservationGroupCfg(
-            terms=copy.deepcopy(noisy_proprio),
-            concatenate_terms=True,
-            enable_corruption=not play,
             history_length=10,
-            flatten_history_dim=True,
+            flatten_history_dim=False,
         ),
         "camera": ObservationGroupCfg(
             terms={
@@ -217,45 +211,13 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                     params={"sensor_name": terrain_scan.name},
                     scale=1.0 / terrain_scan.max_distance,
                 ),
-            },
-            concatenate_terms=True,
-            enable_corruption=False,
-            history_length=1,
-        ),
-        "velocity_target": ObservationGroupCfg(
-            terms={
-                "base_lin_vel": ObservationTermCfg(
-                    func=mdp.builtin_sensor,
-                    params={"sensor_name": "robot/imu_lin_vel"},
-                )
-            },
-            enable_corruption=False,
-            history_length=1,
-        ),
-        "height_target": ObservationGroupCfg(
-            terms={
-                "height_scan": ObservationTermCfg(
-                    func=envs_mdp.height_scan,
-                    params={"sensor_name": terrain_scan.name},
-                    scale=1.0 / terrain_scan.max_distance,
-                )
-            },
-            enable_corruption=False,
-            history_length=1,
-        ),
-        "foot_clearance_target": ObservationGroupCfg(
-            terms={
                 "foot_clearance": ObservationTermCfg(
                     func=mdp.foot_clearance,
                     params={"sensor_names": _FOOT_RAYS, "max_clearance": 0.6},
                     scale=1.0 / 0.6,
-                )
+                ),
             },
-            enable_corruption=False,
-            history_length=1,
-        ),
-        "successor_target": ObservationGroupCfg(
-            terms=copy.deepcopy(clean_proprio),
+            concatenate_terms=True,
             enable_corruption=False,
             history_length=1,
         ),

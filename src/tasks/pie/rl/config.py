@@ -13,4 +13,3 @@ class PIEPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     height_reconstruction_loss_coef: float = 1.0
     successor_loss_coef: float = 1.0
     kl_loss_coef: float = 4.0
-    successor_target_group: str = "successor_target"

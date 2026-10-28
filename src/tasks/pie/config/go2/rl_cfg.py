@@ -8,14 +8,6 @@ from src.tasks.pie.rl import PIEPpoAlgorithmCfg
 _PIE_ACTOR_CLS = "src.tasks.pie.rl.pie_model:PIEActorModel"
 _PIE_PPO_CLS = "src.tasks.pie.rl.ppo:PIEPPO"
 _PIE_ACTOR_CFG = {
-    "proprio_group": "actor",
-    "history_group": "proprio_history",
-    "depth_group": "camera",
-    "velocity_target_group": "velocity_target",
-    "height_target_group": "height_target",
-    "foot_target_group": "foot_clearance_target",
-    "successor_target_group": "successor_target",
-    "history_length": 10,
     "depth_shape": (2, 60, 86),
     "token_dim": 64,
     "attention_heads": 1,
@@ -79,7 +71,7 @@ def pie_runner_cfg() -> RslRlOnPolicyRunnerCfg:
             kl_loss_coef=4.0,
         ),
         obs_groups={
-            "actor": ("actor", "proprio_history", "camera"),
+            "actor": ("actor", "camera"),
             "critic": ("critic",),
         },
         experiment_name="go2_pie_rough",

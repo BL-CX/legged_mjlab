@@ -18,7 +18,6 @@ class PIEPPO(PPO):
         height_reconstruction_loss_coef: float = 1.0,
         successor_loss_coef: float = 1.0,
         kl_loss_coef: float = 4.0,
-        successor_target_group: str = "successor_target",
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -30,7 +29,9 @@ class PIEPPO(PPO):
             "successor": successor_loss_coef,
             "kl": kl_loss_coef,
         }
-        self.successor_target_group = successor_target_group
+        self.storage.observations["next_critic"] = torch.zeros_like(
+            self.storage.observations["critic"]
+        )
 
     def act(self, obs):
         """Collect recurrent rollouts without retaining the rollout graph."""
@@ -47,16 +48,14 @@ class PIEPPO(PPO):
             self.transition.distribution_params = tuple(
                 param.detach() for param in self.actor.output_distribution_params
             )
-        self.transition.observations = obs
+        self.transition.observations = obs.copy()
         return self.transition.actions
 
     def process_env_step(self, obs, rewards, dones, extras) -> None:
-        """Store the clean next proprioception as PIE's successor target."""
+        """Record next critic observations for proprioception reconstruction."""
         if self.transition.observations is None:
             raise RuntimeError("PIEPPO.process_env_step() was called before act().")
-        self.transition.observations[self.successor_target_group] = obs[
-            self.successor_target_group
-        ]
+        self.transition.observations["next_critic"] = obs["critic"]
         super().process_env_step(obs, rewards, dones, extras)
 
     def update(self) -> dict[str, float]:

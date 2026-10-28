@@ -32,24 +32,7 @@ class PIEActorModel(nn.Module):
         super().__init__()
         cfg = dict(cnn_cfg or {})
 
-        self.proprio_group = str(cfg.get("proprio_group", "actor"))
-        self.history_group = str(cfg.get("history_group", "proprio_history"))
-        self.depth_group = str(cfg.get("depth_group", "camera"))
-        self.velocity_target_group = str(
-            cfg.get("velocity_target_group", "velocity_target")
-        )
-        self.height_target_group = str(cfg.get("height_target_group", "height_target"))
-        self.foot_target_group = str(
-            cfg.get("foot_target_group", "foot_clearance_target")
-        )
-        self.successor_target_group = str(
-            cfg.get("successor_target_group", "successor_target")
-        )
-        required_actor_groups = (
-            self.proprio_group,
-            self.history_group,
-            self.depth_group,
-        )
+        required_actor_groups = ("actor", "camera")
         missing = [
             name for name in required_actor_groups if name not in obs_groups[obs_set]
         ]
@@ -62,40 +45,39 @@ class PIEActorModel(nn.Module):
             name
             for name in (
                 *required_actor_groups,
-                self.velocity_target_group,
-                self.height_target_group,
-                self.foot_target_group,
-                self.successor_target_group,
+                "critic",
             )
             if name not in obs
         ]
         if missing_obs:
             raise ValueError(f"PIE observations are missing groups: {missing_obs}.")
 
-        self.proprio_dim = int(obs[self.proprio_group].shape[-1])
-        self.history_dim = int(obs[self.history_group].shape[-1])
-        self.velocity_dim = int(obs[self.velocity_target_group].shape[-1])
-        self.height_map_dim = int(obs[self.height_target_group].shape[-1])
-        self.foot_dim = int(obs[self.foot_target_group].shape[-1])
-        self.successor_dim = int(obs[self.successor_target_group].shape[-1])
-        self.history_length = int(cfg.get("history_length", 10))
-        if self.proprio_dim != 45:
+        actor_obs = obs["actor"]
+        if actor_obs.ndim != 3:
             raise ValueError(
-                f"PIE expects 45 current proprioceptive values, got {self.proprio_dim}."
+                f"PIE requires actor [N,H,F], got {tuple(actor_obs.shape)}."
             )
-        if self.history_dim != self.proprio_dim * self.history_length:
-            raise ValueError(
-                f"PIE expects {self.history_length}x{self.proprio_dim} proprio history, "
-                f"got {self.history_dim}."
-            )
+        self.num_one_step_obs = int(actor_obs.shape[-1])
+        self.num_actor_obs = int(actor_obs.shape[1]) * self.num_one_step_obs
+        if self.num_one_step_obs < 1 or self.num_actor_obs < 1:
+            raise ValueError("PIE actor history and frame dimensions must be positive.")
+        self.history_size = self.num_actor_obs // self.num_one_step_obs
+        self.velocity_dim = 3
+        self.foot_dim = 4
+        self.height_map_dim = (
+            int(obs["critic"].shape[-1])
+            - self.num_one_step_obs
+            - self.velocity_dim
+            - self.foot_dim
+        )
 
         configured_depth_shape = cfg.get("depth_shape", (2, 60, 86))
         self.depth_shape = tuple(int(v) for v in configured_depth_shape)
         self.depth_channels, self.depth_height, self.depth_width = self.depth_shape
         self.depth_flat_dim = self.depth_channels * self.depth_height * self.depth_width
-        if int(obs[self.depth_group].shape[-1]) != self.depth_flat_dim:
+        if int(obs["camera"].shape[-1]) != self.depth_flat_dim:
             raise ValueError(
-                f"PIE depth group has {obs[self.depth_group].shape[-1]} values; "
+                f"PIE depth group has {obs['camera'].shape[-1]} values; "
                 f"expected {self.depth_flat_dim} from depth_shape={self.depth_shape}."
             )
 
@@ -106,8 +88,8 @@ class PIEActorModel(nn.Module):
         self.memory_num_layers = int(cfg.get("memory_num_layers", 1))
         self.obs_normalization = bool(obs_normalization)
         if self.obs_normalization:
-            self.proprio_normalizer = EmpiricalNormalization(self.proprio_dim)
-            self.history_normalizer = EmpiricalNormalization(self.history_dim)
+            self.proprio_normalizer = EmpiricalNormalization(self.num_one_step_obs)
+            self.history_normalizer = EmpiricalNormalization(self.num_actor_obs)
         else:
             self.proprio_normalizer = nn.Identity()
             self.history_normalizer = nn.Identity()
@@ -116,7 +98,7 @@ class PIEActorModel(nn.Module):
             int(v) for v in cfg.get("history_hidden_dims", (256, 128))
         )
         self.history_encoder = MLP(
-            self.history_dim,
+            self.num_actor_obs,
             self.token_dim,
             history_hidden,
             activation,
@@ -155,10 +137,10 @@ class PIEActorModel(nn.Module):
             + self.foot_dim
             + self.vae_latent_dim
         )
-        self.actor_input_dim = self.proprio_dim + estimator_output_dim
+        self.actor_input_dim = self.num_one_step_obs + estimator_output_dim
         self.successor_decoder = MLP(
             estimator_output_dim,
-            self.successor_dim,
+            self.num_one_step_obs,
             tuple(int(v) for v in cfg.get("successor_decoder_dims", (64, 128))),
             activation,
         )
@@ -192,17 +174,19 @@ class PIEActorModel(nn.Module):
         hidden_state=None,
         stochastic_output: bool = False,
     ) -> torch.Tensor:
+        obs_history = obs["actor"].flatten(start_dim=-2)
+        current_obs = obs_history[..., -self.num_one_step_obs:]
         estimates, _new_hidden = self._estimate_tensors(
-            obs[self.proprio_group],
-            obs[self.history_group],
-            obs[self.depth_group],
+            current_obs,
+            obs_history,
+            obs["camera"],
             masks=masks,
             hidden_state=hidden_state,
             update_internal=masks is None and hidden_state is None,
             sample_latent=self.training,
         )
         actor_input = torch.cat(
-            [self.proprio_normalizer(obs[self.proprio_group]), estimates["latent"]],
+            [self.proprio_normalizer(current_obs), estimates["latent"]],
             dim=-1,
         )
         if masks is not None:
@@ -222,10 +206,12 @@ class PIEActorModel(nn.Module):
         hidden_state=None,
     ) -> dict[str, torch.Tensor]:
         """Return the five PIE estimator losses before coefficient weighting."""
+        obs_history = obs["actor"].flatten(start_dim=-2)
+        current_obs = obs_history[..., -self.num_one_step_obs:]
         estimates, _new_hidden = self._estimate_tensors(
-            obs[self.proprio_group],
-            obs[self.history_group],
-            obs[self.depth_group],
+            current_obs,
+            obs_history,
+            obs["camera"],
             masks=masks,
             hidden_state=hidden_state,
             update_internal=False,
@@ -238,18 +224,23 @@ class PIEActorModel(nn.Module):
         kl_per_sample = -0.5 * torch.mean(
             1.0 + logvar - mu.square() - logvar.exp(), dim=-1
         )
+        critic_obs = obs["critic"]
         return {
             "velocity": self._masked_mse(
-                estimates["velocity"], obs[self.velocity_target_group], masks
+                estimates["velocity"],
+                critic_obs[..., self.num_one_step_obs:self.num_one_step_obs + self.velocity_dim],
+                masks,
             ),
             "foot_clearance": self._masked_mse(
-                estimates["foot_clearance"], obs[self.foot_target_group], masks
+                estimates["foot_clearance"], critic_obs[..., -self.foot_dim:], masks
             ),
             "height_reconstruction": self._masked_mse(
-                height_hat, obs[self.height_target_group], masks
+                height_hat, 
+                critic_obs[..., self.num_one_step_obs + self.velocity_dim:self.num_one_step_obs + self.velocity_dim + self.height_map_dim], 
+                masks,
             ),
             "successor": self._masked_mse(
-                successor_hat, obs[self.successor_target_group], masks
+                successor_hat, obs["next_critic"][..., :self.num_one_step_obs], masks
             ),
             "kl": self._masked_mean(kl_per_sample, masks),
         }
@@ -381,8 +372,10 @@ class PIEActorModel(nn.Module):
 
     def update_normalization(self, obs: TensorDict) -> None:
         if self.obs_normalization:
-            self.proprio_normalizer.update(obs[self.proprio_group])  # type: ignore[attr-defined]
-            self.history_normalizer.update(obs[self.history_group])  # type: ignore[attr-defined]
+            obs_history = obs["actor"].flatten(start_dim=-2)
+            current_obs = obs_history[..., -self.num_one_step_obs:]
+            self.proprio_normalizer.update(current_obs)  # type: ignore[attr-defined]
+            self.history_normalizer.update(obs_history)  # type: ignore[attr-defined]
 
     @property
     def output_mean(self) -> torch.Tensor:
@@ -469,8 +462,8 @@ class _ExportPIEActor(nn.Module):
 
     def get_dummy_inputs(self) -> tuple[torch.Tensor, ...]:
         return (
-            torch.zeros(1, self.model.proprio_dim),
-            torch.zeros(1, self.model.history_dim),
+            torch.zeros(1, self.model.num_one_step_obs),
+            torch.zeros(1, self.model.num_actor_obs),
             torch.zeros(1, *self.model.depth_shape),
             torch.zeros(self.model.memory_num_layers, 1, self.model.memory_hidden_dim),
         )
