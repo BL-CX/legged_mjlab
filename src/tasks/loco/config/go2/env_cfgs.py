@@ -6,6 +6,7 @@ import copy
 import math
 from dataclasses import replace
 
+from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
 from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -32,7 +33,6 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
 from src.assets.robots import get_go2_robot_cfg
-from src.envs import ManagerBasedRlEnvCfg
 from src.tasks.loco import mdp
 from src.tasks.loco.mdp import UniformVelocityCommandCfg
 from src.tasks.loco.terrains import ROUGH_TERRAINS_CFG
@@ -429,7 +429,6 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ##
 
     cfg = ManagerBasedRlEnvCfg(
-        capture_terminal_observations=True,
         scene=SceneCfg(
             terrain=TerrainEntityCfg(
                 terrain_type="generator",
