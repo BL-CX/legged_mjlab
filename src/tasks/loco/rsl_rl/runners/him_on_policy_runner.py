@@ -139,19 +139,19 @@ class HIMOnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
+                    previous_critic_obs = critic_obs.detach().clone()
+                    actions = self.alg.act(obs, previous_critic_obs)
                     observations, rewards, dones, infos = self.env.step(actions)
                     obs = observations["actor"].flatten(1).to(self.device)
                     critic_obs = observations["critic"].to(self.device)
                     rewards, dones = rewards.to(self.device), dones.to(self.device)
 
-                    # Auto-reset observations are for the next rollout action.
-                    # Estimator targets must instead use the pre-reset critic.
+                    # Native MJLab returns post-reset observations. Approximate
+                    # terminal targets with the corresponding pre-step critic.
                     next_critic_obs = critic_obs.detach().clone()
-                    if dones.any():
-                        terminal = infos["terminal"]
-                        termination_ids = terminal["env_ids"].to(self.device)
-                        next_critic_obs[termination_ids] = terminal["observations"]["critic"].to(self.device)
+                    termination_ids = (dones > 0).nonzero(as_tuple=False).flatten()
+                    if len(termination_ids) > 0:
+                        next_critic_obs[termination_ids] = previous_critic_obs[termination_ids]
                     self.alg.process_env_step(rewards, dones, infos, next_critic_obs)
                     if self.log_dir is not None:
                         # Book keeping

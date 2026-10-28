@@ -92,7 +92,7 @@ class HIMAMPOnPolicyRunner:
         observations = self.env.get_observations()
         obs = observations["actor"].flatten(1).to(self.device)
         critic_obs = observations["critic"].to(self.device)
-        amp_obs = observations["amp"].to(self.device)
+        amp_obs = observations["amp"].detach().clone().to(self.device)
         self.alg.actor_critic.train() # switch to train mode (for dropout for example)
         self.alg.discriminator.train()
 
@@ -115,22 +115,23 @@ class HIMAMPOnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs,amp_obs)
+                    previous_critic_obs = critic_obs.detach().clone()
+                    actions = self.alg.act(obs, previous_critic_obs,amp_obs)
                     observations, rewards, dones, infos = self.env.step(actions)
                     obs = observations["actor"].flatten(1).to(self.device)
                     critic_obs = observations["critic"].to(self.device)
                     next_amp_obs = observations["amp"].to(self.device)
                     rewards, dones = rewards.to(self.device), dones.to(self.device)
 
-                    # Rollout actions use post-reset states. Estimator and AMP
-                    # transition targets use the captured pre-reset states.
+                    # MJLab returns post-reset observations for done rows. As in
+                    # AMP_mjlab, approximate their terminal targets with the
+                    # observations from before this action.
                     next_amp_obs_with_term = next_amp_obs.detach().clone()
                     next_critic_obs = critic_obs.detach().clone()
-                    if dones.any():
-                        terminal = infos["terminal"]
-                        termination_ids = terminal["env_ids"].to(self.device)
-                        next_amp_obs_with_term[termination_ids] = terminal["observations"]["amp"].to(self.device)
-                        next_critic_obs[termination_ids] = terminal["observations"]["critic"].to(self.device)
+                    termination_ids = (dones > 0).nonzero(as_tuple=False).flatten()
+                    if len(termination_ids) > 0:
+                        next_amp_obs_with_term[termination_ids] = amp_obs[termination_ids]
+                        next_critic_obs[termination_ids] = previous_critic_obs[termination_ids]
                     self.task_rewards = rewards
                     rewards,self.amp_rewards = self.alg.discriminator.predict_amp_reward(amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer)
                     iteration_reward_sum += rewards.mean()
