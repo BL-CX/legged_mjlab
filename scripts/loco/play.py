@@ -10,7 +10,7 @@ from unittest import runner
 import torch
 import tyro
 
-from src.envs import ManagerBasedRlEnv
+from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
