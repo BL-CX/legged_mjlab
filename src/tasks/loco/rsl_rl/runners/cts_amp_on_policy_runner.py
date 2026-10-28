@@ -148,12 +148,12 @@ class CTSAMPOnPolicyRunner:
                     privileged_buf = observations["privileged"].to(self.device)
                     rewards, dones = rewards.to(self.device), dones.to(self.device)
                     next_amp_obs = observations["amp"].to(self.device)
+                    # Native MJLab auto-resets before observation computation.
+                    # Approximate terminal AMP states with the pre-step states.
                     next_amp_obs_with_term = torch.clone(next_amp_obs)
-                    if dones.any():
-                        terminal = infos["terminal"]
-                        reset_env_ids = terminal["env_ids"].to(self.device)
-                        next_amp_obs_with_term[reset_env_ids] = terminal["observations"]["amp"].to(self.device)
-                    # print(amp_obs.shape, next_amp_obs_with_term.shape, rewards.shape, dones.shape, infos.keys())
+                    reset_env_ids = (dones > 0).nonzero(as_tuple=False).flatten()
+                    if len(reset_env_ids) > 0:
+                        next_amp_obs_with_term[reset_env_ids] = amp_obs[reset_env_ids]
                     rewards,amp_rewards = self.alg.discriminator.predict_amp_reward(amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer)
                     amp_obs = torch.clone(next_amp_obs)
                     self.alg.process_env_step(rewards, dones, infos, next_amp_obs_with_term)

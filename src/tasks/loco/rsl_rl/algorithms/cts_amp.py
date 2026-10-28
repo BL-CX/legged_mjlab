@@ -136,6 +136,9 @@ class CTSAMP:
             self.sym_hist_P = build_sym_perm_matrix(obs_permutation, stack=fs, device=self.device)
             self.sym_priv_P = build_sym_perm_matrix(privileged_permutation, stack=1, device=self.device)
 
+    def get_policy(self):
+        return self.model
+
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, privileged_obs_shape,critic_obs_shape, action_shape):
         self.storage = CTSRolloutStorage(num_envs, self.teacher_num_envs, num_transitions_per_env, actor_obs_shape,privileged_obs_shape,critic_obs_shape,action_shape, self.device)
 
