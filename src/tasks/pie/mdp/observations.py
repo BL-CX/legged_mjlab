@@ -6,10 +6,29 @@ import torch
 import torch.nn.functional as F
 
 from mjlab.managers import ManagerTermBase
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import CameraSensor, RayCastSensor
 
 if TYPE_CHECKING:
+    from mjlab.entity import Entity
     from mjlab.envs import ManagerBasedRlEnv
+
+
+def amp_observations(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Return joint positions, body-frame velocities, and joint velocities."""
+    asset: Entity = env.scene[asset_cfg.name]
+    return torch.cat(
+        (
+            asset.data.joint_pos[:, asset_cfg.joint_ids],
+            asset.data.root_link_lin_vel_b,
+            asset.data.root_link_ang_vel_b,
+            asset.data.joint_vel[:, asset_cfg.joint_ids],
+        ),
+        dim=-1,
+    )
 
 
 def camera_depth(
