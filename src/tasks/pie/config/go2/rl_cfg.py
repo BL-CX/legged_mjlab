@@ -78,4 +78,5 @@ def pie_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         save_interval=1000,
         num_steps_per_env=24,
         max_iterations=20000,
+        logger="tensorboard",
     )
