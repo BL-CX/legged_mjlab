@@ -1,12 +1,16 @@
 """Unitree Go2 PIE training configuration."""
 
+from dataclasses import asdict
+from pathlib import Path
+
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg
 
-from src.tasks.pie.rl import PIEPpoAlgorithmCfg
+from src.tasks.pie.rl import PIEAMPPpoAlgorithmCfg, PIEPpoAlgorithmCfg
 
 
 _PIE_ACTOR_CLS = "src.tasks.pie.rl.pie_model:PIEActorModel"
 _PIE_PPO_CLS = "src.tasks.pie.rl.ppo:PIEPPO"
+_GO2_MOTION_DIR = Path(__file__).resolve().parents[4] / "assets/motions/mocap_motions_go2"
 _PIE_ACTOR_CFG = {
     "depth_shape": (2, 60, 86),
     "token_dim": 64,
@@ -80,3 +84,16 @@ def pie_runner_cfg() -> RslRlOnPolicyRunnerCfg:
         max_iterations=20000,
         logger="tensorboard",
     )
+
+
+def pie_amp_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+    """Configure PIE AMP training with the Go2 motion dataset."""
+    cfg = pie_runner_cfg()
+    algorithm_cfg = asdict(cfg.algorithm)
+    algorithm_cfg["class_name"] = "src.tasks.pie.rl.amp_ppo:PIEAMPPPO"
+    algorithm_cfg["amp_motion_files"] = [
+        str(path) for path in sorted(_GO2_MOTION_DIR.glob("*.txt"))
+    ]
+    cfg.algorithm = PIEAMPPpoAlgorithmCfg(**algorithm_cfg)
+    cfg.experiment_name = "go2_pie_amp_rough"
+    return cfg
