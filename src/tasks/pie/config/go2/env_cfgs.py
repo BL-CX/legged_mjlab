@@ -526,3 +526,20 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         )
 
     return cfg
+
+
+def rough_amp_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """Add an independent physical-state observation group for AMP."""
+    cfg = rough_env_cfg(play=play)
+    cfg.observations["amp"] = ObservationGroupCfg(
+        terms={
+            "state": ObservationTermCfg(
+                func=mdp.amp_observations,
+                params={"asset_cfg": SceneEntityCfg("robot")},
+            ),
+        },
+        concatenate_terms=True,
+        enable_corruption=False,
+        history_length=1,
+    )
+    return cfg

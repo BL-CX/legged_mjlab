@@ -4,8 +4,8 @@ from mjlab.tasks.registry import register_mjlab_task
 
 from src.tasks.pie.rl import PIEOnPolicyRunner
 
-from .env_cfgs import rough_env_cfg
-from .rl_cfg import pie_runner_cfg
+from .env_cfgs import rough_amp_env_cfg, rough_env_cfg
+from .rl_cfg import pie_amp_runner_cfg, pie_runner_cfg
 
 
 register_mjlab_task(
@@ -13,5 +13,14 @@ register_mjlab_task(
     env_cfg=rough_env_cfg(),
     play_env_cfg=rough_env_cfg(play=True),
     rl_cfg=pie_runner_cfg(),
+    runner_cls=PIEOnPolicyRunner,
+)
+
+
+register_mjlab_task(
+    task_id="go2-pie-amp-rough",
+    env_cfg=rough_amp_env_cfg(),
+    play_env_cfg=rough_amp_env_cfg(play=True),
+    rl_cfg=pie_amp_runner_cfg(),
     runner_cls=PIEOnPolicyRunner,
 )
