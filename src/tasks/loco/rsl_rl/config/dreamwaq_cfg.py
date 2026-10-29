@@ -67,7 +67,8 @@ class DreamWaQAMPOnPolicyRunnerCfg(DreamWaQOnPolicyRunnerCfg):
     algorithm_class_name: Literal["DreamWaQAMPPPO"] = "DreamWaQAMPPPO"
     policy: DreamWaQAMPActorCriticCfg = field(default_factory=DreamWaQAMPActorCriticCfg)
     algorithm: DreamWaQAMPPPOAlgorithmCfg = field(default_factory=DreamWaQAMPPPOAlgorithmCfg)
-    amp_reward_coef: float = 0.2
+    amp_reward_coef: float = 0.15
+    amp_task_reward_lerp: float = 0.9
     amp_motion_files: list[str] = field(default_factory=list)
     reorder_motion_data: bool = False
     amp_num_preload_transitions: int = 2_000_000

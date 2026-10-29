@@ -24,7 +24,8 @@ class PIEAMPPPO(PIEPPO):
         *args,
         amp_motion_files: list[str],
         reorder_motion_data: bool = False,
-        amp_reward_coef: float = 0.5,
+        amp_reward_coef: float = 0.15,
+        amp_task_reward_lerp: float = 0.9,
         amp_num_preload_transitions: int = 200_000,
         amp_discr_hidden_dims: tuple[int, ...] = (1024, 512),
         amp_replay_buffer_size: int = 1_000_000,
@@ -72,7 +73,7 @@ class PIEAMPPPO(PIEPPO):
             amp_reward_coef,
             amp_discr_hidden_dims,
             self.device,
-            reward_dt=amp_time_between_frames,
+            amp_task_reward_lerp=amp_task_reward_lerp,
         )
         self.amp_storage = ReplayBuffer(self.amp_obs_dim, amp_replay_buffer_size, self.device)
         self.amp_optimizer = torch.optim.Adam(

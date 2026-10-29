@@ -22,7 +22,8 @@ class PIEAMPPpoAlgorithmCfg(PIEPpoAlgorithmCfg):
     class_name: str = "src.tasks.pie.rl.amp_ppo:PIEAMPPPO"
     amp_motion_files: list[str] = field(default_factory=list)
     reorder_motion_data: bool = False
-    amp_reward_coef: float = 0.5
+    amp_reward_coef: float = 0.5 * 0.02
+    amp_task_reward_lerp: float = 0.3
     amp_num_preload_transitions: int = 200_000
     amp_discr_hidden_dims: tuple[int, ...] = (1024, 512)
     amp_replay_buffer_size: int = 1_000_000

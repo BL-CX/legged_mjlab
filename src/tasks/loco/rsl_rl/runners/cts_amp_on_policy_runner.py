@@ -91,7 +91,8 @@ class CTSAMPOnPolicyRunner:
         discriminator = AMPDiscriminator(
             amp_data.observation_dim * 2,
             self.cfg['amp_reward_coef'],
-            self.cfg['amp_discr_hidden_dims'], device
+            self.cfg['amp_discr_hidden_dims'], device,
+            amp_task_reward_lerp=self.cfg["amp_task_reward_lerp"],
             ).to(self.device)
         min_std = (
             torch.tensor(self.cfg["min_normalized_std"], device=self.device) *

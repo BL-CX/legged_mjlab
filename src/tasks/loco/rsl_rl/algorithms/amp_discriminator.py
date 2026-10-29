@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.utils.data
@@ -8,13 +10,15 @@ from ..utils import utils
 
 class AMPDiscriminator(nn.Module):
     def __init__(
-            self, input_dim, amp_reward_coef, hidden_layer_sizes, device):
+            self, input_dim, amp_reward_coef, hidden_layer_sizes, device,
+            amp_task_reward_lerp=0.9):
         super(AMPDiscriminator, self).__init__()
 
         self.device = device
         self.input_dim = input_dim
 
         self.amp_reward_coef = amp_reward_coef
+        self.amp_task_reward_lerp = amp_task_reward_lerp
         amp_layers = []
         curr_in_dim = input_dim
         for hidden_dim in hidden_layer_sizes:
@@ -59,10 +63,11 @@ class AMPDiscriminator(nn.Module):
                 next_state = normalizer.normalize_torch(next_state, self.device)
 
             d = self.amp_linear(self.trunk(torch.cat([state, next_state], dim=-1)))
-            amp_reward = 0.02*self.amp_reward_coef* torch.clamp(1 - (1/4) * torch.square(d - 1), min=0)
+            amp_reward = self.amp_reward_coef * torch.clamp(
+                1 - (1 / 4) * torch.square(d - 1), min=0)
             reward = self._lerp_reward(amp_reward, task_reward.unsqueeze(-1))
             self.train()
         return reward.squeeze(-1), amp_reward.squeeze(-1)
 
     def _lerp_reward(self, disc_r, task_r):
-        return  disc_r + task_r
+        return self.amp_task_reward_lerp * task_r + (1 - self.amp_task_reward_lerp) * disc_r
