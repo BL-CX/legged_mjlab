@@ -33,14 +33,6 @@ class TerrainVelocityCommand(UniformVelocityCommand):
     self.terrain_names = tuple(generator.sub_terrains)
     if set(self.terrain_names) != set(cfg.terrain_ranges):
       raise ValueError("terrain_ranges must exactly match terrain_generator.sub_terrains names.")
-    proportions = torch.tensor(
-      [sub.proportion for sub in generator.sub_terrains.values()],
-      device=self.device,
-    )
-    fractions = torch.arange(generator.num_cols, device=self.device) / generator.num_cols + 0.001
-    self.column_terrain_ids = (
-      fractions[:, None] >= (proportions / proportions.sum()).cumsum(0)[None, :]
-    ).sum(1).clamp(max=len(self.terrain_names) - 1)
     # Keep mutable curriculum ranges separate from the declarative configuration.
     self.velocity_ranges = torch.tensor([
       [getattr(cfg.terrain_ranges[name], axis)
@@ -50,7 +42,8 @@ class TerrainVelocityCommand(UniformVelocityCommand):
 
   @property
   def terrain_ids(self) -> torch.Tensor:
-    return self.column_terrain_ids[self._env.scene.terrain.terrain_types]
+    # MJLab 1.6 的课程地图按 sub_terrains 顺序为每类地形生成一列。
+    return self._env.scene.terrain.terrain_types
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     terrain_ids = self.terrain_ids[env_ids]
@@ -78,11 +71,11 @@ class TerrainVelocityCommand(UniformVelocityCommand):
       self.is_standing_env[ids] = (
         torch.rand(len(ids), device=self.device) < self.cfg.rel_standing_envs
       )
-    self._update_command()
 
-  def _update_command(self) -> None:
+  def _update_command(self, env_ids: torch.Tensor | None = None) -> None:
     # The native implementation wraps heading error and applies standing masks.
-    super()._update_command()
+    super()._update_command(env_ids)
+    # 原生航向控制是当前状态的纯函数，会刷新全部环境；地形限幅同步覆盖全部行。
     bounds = self.velocity_ranges[self.terrain_ids, 2]
     self.vel_command_b[:, 2] = torch.clamp(
       self.vel_command_b[:, 2], min=bounds[:, 0], max=bounds[:, 1]

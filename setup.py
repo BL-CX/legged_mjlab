@@ -15,10 +15,10 @@ setup(
         "src.assets.robots.unitree_go2": ["xmls/*.xml", "xmls/assets/*.obj"],
     },
     install_requires=[
-        "mjlab==1.2.0",
-        "mujoco==3.5.0",
-        "mujoco-warp==3.5.0",
-        "warp-lang==1.12.1",
+        "mjlab==1.6.0",
+        "mujoco==3.11.0",
+        "mujoco-warp==3.11.0",
+        "warp-lang>=1.14.0",
         "numpy",
         # MJLab 1.2 imports scipy.interpolate but omits SciPy from its metadata.
         "scipy",

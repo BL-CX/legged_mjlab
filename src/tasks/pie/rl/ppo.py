@@ -168,20 +168,14 @@ class PIEPPO(PPO):
             )
 
             if self.rnd:
-                with torch.no_grad():
-                    rnd_state = self.rnd.get_rnd_state(
-                        batch.observations[:original_batch_size]
-                    )
-                    rnd_state = self.rnd.state_normalizer(rnd_state)
-                predicted_embedding = self.rnd.predictor(rnd_state)
-                target_embedding = self.rnd.target(rnd_state).detach()
-                rnd_loss = nn.functional.mse_loss(predicted_embedding, target_embedding)
+                rnd_loss = self.rnd.compute_loss(
+                    batch.observations[:original_batch_size]
+                )
 
             self.optimizer.zero_grad()
             loss.backward()
             if self.rnd:
-                assert self.rnd_optimizer is not None
-                self.rnd_optimizer.zero_grad()
+                self.rnd.optimizer.zero_grad()
                 rnd_loss.backward()
 
             if self.is_multi_gpu:
@@ -189,8 +183,8 @@ class PIEPPO(PPO):
             nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
             nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
-            if self.rnd_optimizer:
-                self.rnd_optimizer.step()
+            if self.rnd:
+                self.rnd.optimizer.step()
 
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()

@@ -121,11 +121,11 @@ def run_replay(cfg: ReplayConfig):
             running = viewer.is_running
         elif kind == "viser":
             import viser
-            from mjlab.viewer.viser.scene import ViserMujocoScene
+            from mjlab.viewer.viser.scene import MjlabViserScene
             server = viser.ViserServer(port=cfg.port)
             stack.callback(server.stop)
-            scene = ViserMujocoScene.create(server, model, num_envs=1)
-            scene.create_visualization_gui(show_debug_viz_control=False)
+            scene = MjlabViserScene(server, model, num_envs=1)
+            scene.create_scene_gui(show_debug_viz_control=False)
             show = lambda: scene.update_from_mjdata(data)
             running = lambda: True
         else:

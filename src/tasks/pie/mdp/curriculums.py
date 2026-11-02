@@ -9,7 +9,6 @@ import torch
 from mjlab.managers import ManagerTermBase
 from mjlab.tasks.velocity.mdp.curriculums import (
   commands_vel,
-  reward_weight,
   terrain_levels_vel,
 )
 
@@ -19,7 +18,7 @@ if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
 __all__ = [
-  "commands_vel", "reward_weight", "terrain_levels_vel", "TerrainVelocityCurriculum",
+  "commands_vel", "terrain_levels_vel", "TerrainVelocityCurriculum",
 ]
 
 
