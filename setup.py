@@ -13,6 +13,7 @@ setup(
     package_data={
         "src.assets": ["motions/mocap_motions_go2/*.txt"],
         "src.assets.robots.unitree_go2": ["xmls/*.xml", "xmls/assets/*.obj"],
+        "src.tasks.supermimic.rl.core": ["LICENSE"],
     },
     install_requires=[
         "mjlab==1.6.0",
@@ -27,5 +28,6 @@ setup(
         "prettytable",
         "tyro>=1.0.1",
         "tensorboard>=2.20.0",
+        "onnx>=1.16.0",
     ],
 )
