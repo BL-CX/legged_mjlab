@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
 
 from .dynamics import DynamicsMLP
-from .heads import AnalyticHeads
+
+if TYPE_CHECKING:
+    from .heads import AnalyticHeads
 
 
 @dataclass
@@ -37,13 +40,13 @@ class WorldModel(nn.Module):
         feat = self.spec.canonical(s, recorded)
         delta = self.dynamics(feat, action, self.spec.normalize_xi(xi))
         state = self.spec.unpack(s, xi)
-        physical = self.spec.integrate(state, delta)
+        physical = self.spec.integrate(state.physical, delta)
         return self.spec.pack(self.heads.advance(state, action, physical))
 
     def _loss_step(self, s, a, xi, s_true, recorded):
         """One autoregressive step of Eq. 1, including task error coordinates."""
         s_next = self.step(s, a, xi, recorded)
-        e = self.spec.error_vector(s, s_next, s_true, recorded, xi)
+        e = self.spec.error_vector(s, s_next, s_true, recorded)
         return s_next, e * e
 
     def enable_compile(self, mode: str | None = "default") -> None:
@@ -87,7 +90,7 @@ class WorldModel(nn.Module):
         out = []
         for j in range(k):
             s_next = self.step(s, a_exec[j], xi)
-            e = self.spec.error_vector(s, s_next, states[j + 1], states[j], xi)
+            e = self.spec.error_vector(s, s_next, states[j + 1], states[j])
             out.append((e * e).mean(-1).mean())
             s = s_next
         return torch.stack(out)

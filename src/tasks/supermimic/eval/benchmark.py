@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from ..world_model.state_spec import Physical
 from .playback import make_playback
 
 
@@ -19,7 +20,7 @@ def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", 
     try:
         command = env.command_manager.get_term("velocity")
         task = command.model
-        cfg = command.task_cfg
+        cfg = command.env_cfg
         device = env.device
         commands = torch.tensor(((0.5, 0.0, 0.0), (-0.5, 0.0, 0.0), (0.0, 0.5, 0.0), (0.0, 0.0, 0.5)), device=device)
         command_names = ("forward", "backward", "lateral", "yaw")
@@ -27,7 +28,7 @@ def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", 
         fixed_commands = commands[groups]
         command.set_commands(fixed_commands)
         # Reset the initial physics state after all components are ready.
-        torch.manual_seed(cfg.env.seed)
+        torch.manual_seed(cfg.seed)
         observations, _ = env.reset()
         count = math.ceil(seconds / env.step_dt)
         first_steps = torch.full((num_envs,), count, device=device, dtype=torch.long)
@@ -52,7 +53,7 @@ def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", 
             linear_square += (measured[:, :2] - fixed_commands[:, :2]).double().square().sum(-1)
             yaw_square += (measured[:, 2] - fixed_commands[:, 2]).double().square()
             action_square += actions.double().square().mean(-1)
-            height_sum += task.spec.physical_features(final)[:, 0].double()
+            height_sum += Physical.split(final.physical).height.squeeze(-1).double()
             reward_sum += reward.double()
             action_max = max(action_max, float(actions.abs().max()))
             done = terminated | truncated
@@ -85,9 +86,9 @@ def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", 
 
         result = {
             "checkpoint": str(checkpoint),
-            "terrain": cfg.env.terrain,
+            "terrain": cfg.terrain,
             "device": str(device),
-            "seed": cfg.env.seed,
+            "seed": cfg.seed,
             "control_steps": count,
             "commands": commands.tolist(),
             "command_frame": "body_xy_world_yaw",

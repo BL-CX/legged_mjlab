@@ -19,7 +19,6 @@ from .rollout import imagine
 class PolicyTrainerCfg:
     horizon: int = 32
     batch_size: int = 4096
-    history: int = 5
     gamma: float = 0.99
     gae_lambda: float = 0.95
     lr: float = 2e-4
@@ -52,7 +51,7 @@ class PolicyTrainer:
 
     def update(self, buffer: ReplayBuffer) -> dict[str, float]:
         cfg = self.cfg
-        start = buffer.sample_starts(cfg.batch_size, cfg.history)
+        start = buffer.sample_starts(cfg.batch_size, self.policy.history_length)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------
         self.wm.requires_grad_(False)

@@ -4,58 +4,55 @@
 import torch
 from torch import Tensor
 
-from ...world_model.state_spec import (
-    AIR_TIME,
-    ANGULAR_BODY,
-    BASE_OBSERVATION_DIM,
-    COMMAND_OVERRIDE,
-    COMMAND_TIMER,
-    CONTACT,
-    CONTACT_TIME,
-    CONTEXT_ENCODER_BIAS,
-    FORWARD,
-    GRAVITY,
-    HEADING_TARGET,
-    HEIGHT,
-    JOINT_OFFSET,
-    JOINT_VELOCITY,
-    PREVIOUS_ACTION,
-    PREVIOUS_PREVIOUS_ACTION,
-    STANDING,
-    TaskState,
-)
+from ...world_model.state_spec import Context, Memory, Physical, TaskState
 from .gait_rewards import gait_phase
+
+OBS_TERMS = (
+    ("base_angular_velocity_body", 3),
+    ("projected_gravity_body", 3),
+    ("joint_position_offset_with_encoder_bias", 12),
+    ("joint_velocity", 12),
+    ("previous_unscaled_action", 12),
+    ("velocity_command", 3),
+    ("gait_phase_sin_cos", 2),
+)
+OBS_DIM = sum(width for _, width in OBS_TERMS)
+CRITIC_DIM = 262
 
 
 def privileged_observation(task, state: TaskState) -> Tensor:
     """Build critic inputs with pose-detached terrain relief and differentiable base height."""
+    physical = Physical.split(state.physical)
+    memory = Memory.split(state.memory)
+    context = Context.split(state.context)
     phase = 2 * torch.pi * gait_phase(state, task.dt, task.cfg.reward.gait.period)
-    heading_error = state.memory[:, HEADING_TARGET] - task.spec.yaw(state)
+    heading_error = memory.heading_target.squeeze(-1) - physical.pose[:, 2]
     task_features = torch.cat(
         (
             phase.sin()[:, None],
             phase.cos()[:, None],
             heading_error.sin()[:, None],
             heading_error.cos()[:, None],
-            state.memory[:, STANDING : FORWARD + 1],
-            state.memory[:, CONTACT],
-            state.memory[:, AIR_TIME],
-            state.memory[:, CONTACT_TIME],
-            state.memory[:, COMMAND_OVERRIDE, None],
-            state.memory[:, PREVIOUS_PREVIOUS_ACTION],
+            memory.standing,
+            memory.forward,
+            memory.contact,
+            memory.air_time,
+            memory.contact_time,
+            memory.command_override,
+            memory.previous_previous_action,
         ),
         -1,
     )
     # Detach terrain relief from pose gradients while retaining the base-height value gradient.
-    scan = state.physical[:, HEIGHT] + (task.spec.terrain_scan(state) - state.physical[:, HEIGHT]).detach()
+    scan = physical.height + (task.spec.terrain_scan(state.physical) - physical.height).detach()
     return torch.cat(
         (
-            task.spec.physical_features(state),
-            state.memory[:, PREVIOUS_ACTION],
+            task.spec.physical_features(state.physical),
+            memory.previous_action,
             state.command,
-            state.memory[:, COMMAND_TIMER, None],
+            memory.command_timer,
             scan,
-            task.spec.simulation_context(state),
+            torch.cat((context.friction, context.com, context.encoder_bias), -1),
             task_features,
         ),
         -1,
@@ -63,15 +60,17 @@ def privileged_observation(task, state: TaskState) -> Tensor:
 
 
 def analytic_observation(task, state: TaskState, *, noisy: bool = False) -> Tensor:
-    """Build proprioception and optional gait phase, retaining the original actor-noise stream."""
-    physical = state.physical
+    """Build proprioception and gait phase, retaining the original actor-noise stream."""
+    physical = Physical.split(state.physical)
+    memory = Memory.split(state.memory)
+    context = Context.split(state.context)
     observation = torch.cat(
         (
-            physical[:, ANGULAR_BODY],
-            physical[:, GRAVITY],
-            physical[:, JOINT_OFFSET] + state.context[:, CONTEXT_ENCODER_BIAS],
-            physical[:, JOINT_VELOCITY],
-            state.memory[:, PREVIOUS_ACTION],
+            physical.angular_body,
+            physical.gravity,
+            physical.joint_offset + context.encoder_bias,
+            physical.joint_velocity,
+            memory.previous_action,
             state.command,
         ),
         -1,
@@ -79,7 +78,7 @@ def analytic_observation(task, state: TaskState, *, noisy: bool = False) -> Tens
     if noisy and task.cfg.noise.add_noise:
         # Keep the original 45-feature noise stream; phase features receive no noise.
         observation = (
-            observation + (2 * torch.rand_like(observation) - 1) * task.noise_amplitude[:BASE_OBSERVATION_DIM]
+            observation + (2 * torch.rand_like(observation) - 1) * task.noise_amplitude[: observation.shape[-1]]
         )
     phase = 2 * torch.pi * gait_phase(state, task.dt, task.cfg.reward.gait.period)
     moving = state.command[:, :2].norm(dim=-1) + state.command[:, 2].abs() > task.cfg.reward.gait.command_threshold

@@ -13,11 +13,11 @@ import torch
 from mjlab.entity import Entity
 from mjlab.utils.lab_api.string import resolve_matching_names_values
 
-from src.assets.robots.unitree_go2.go2_constants import DELAYED_CFG, get_go2_robot_cfg
-
-from ..config import FRAMEWORK, TrainConfig, load_config
+from ..config import FRAMEWORK, load_config
+from ..config.go2.env_cfg import make_env_cfg
+from ..config.go2.rl_cfg import TrainConfig
+from ..envs.mdp.observations import OBS_TERMS
 from ..policy.nets import Policy, PolicyCfg
-from ..world_model.state_spec import OBS_TERMS
 
 
 def load_policy_checkpoint(path: str | Path):
@@ -32,14 +32,16 @@ def load_policy_checkpoint(path: str | Path):
     trained = TrainConfig.from_dict(checkpoint["config"])
     if checkpoint.get("spec_hash") != snapshot.get("spec_hash"):
         raise ValueError("Checkpoint and task snapshot metadata mismatch")
-    if json.dumps(asdict(trained.task), sort_keys=True) != json.dumps(asdict(cfg), sort_keys=True):
+    if json.dumps(asdict(trained.env), sort_keys=True) != json.dumps(asdict(cfg), sort_keys=True):
         raise ValueError("Checkpoint and task snapshot configuration mismatch")
     return cfg, snapshot, checkpoint
 
 
 def checkpoint_actor(checkpoint: dict):
     """Construct the saved policy at the caller's intended RNG boundary."""
-    actor = Policy(PolicyCfg(**checkpoint["config"]["policy"]))
+    actor = Policy(
+        PolicyCfg(**checkpoint["config"]["policy"]), history_length=checkpoint["config"]["env"]["history_length"]
+    )
     actor.load_state_dict(checkpoint["policy"], strict=True)
     return actor.eval().requires_grad_(False)
 
@@ -50,13 +52,11 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
 
     cfg, _, checkpoint = load_policy_checkpoint(checkpoint_path)
     actor = checkpoint_actor(checkpoint)
-    robot_cfg = get_go2_robot_cfg(DELAYED_CFG)
+    native_cfg = make_env_cfg(cfg)
+    robot_cfg = native_cfg.scene.entities["robot"]
     joint_names = Entity(robot_cfg).joint_names
     _, _, default_joint_positions = resolve_matching_names_values(robot_cfg.init_state.joint_pos, joint_names)
-    indices, _, values = resolve_matching_names_values(cfg.env.action_scale, joint_names)
-    action_scales = [1.0] * len(joint_names)
-    for index, value in zip(indices, values, strict=True):
-        action_scales[index] = value
+    action_scales = [native_cfg.actions["joint_pos"].scale] * len(joint_names)
     iteration = checkpoint["iteration"]
     layout = [{"name": name, "width": width} for name, width in OBS_TERMS]
     information = {
@@ -82,7 +82,7 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
         "default_joint_positions": default_joint_positions,
         "action_scales": action_scales,
         "action_semantics": "unscaled_joint_position_offsets",
-        "control_dt_seconds": cfg.env.timestep * cfg.env.decimation,
+        "control_dt_seconds": cfg.timestep * cfg.decimation,
         "command_frame": "body_xy_world_yaw",
         "gait_phase": {
             "enabled": True,

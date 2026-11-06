@@ -9,8 +9,7 @@ from pathlib import Path
 import torch
 from mjlab.utils.wrappers import VideoRecorder
 
-from ..config import TaskConfig
-from ..envs.velocity_env_cfg import make_env
+from ..config.go2.env_cfg import EnvCfg, make_env
 from ..world_model.heads import AnalyticHeads
 from .export import checkpoint_actor, load_policy_checkpoint
 
@@ -43,15 +42,15 @@ def make_playback(
 ):
     """Construct native playback with checkpoint semantics and optional video."""
     source = load_policy_checkpoint(checkpoint_file) if agent == "trained" else None
-    cfg = deepcopy(source[0]) if source is not None else TaskConfig()
+    cfg = deepcopy(source[0]) if source is not None else EnvCfg()
     if terrain is not None:
-        if source is not None and terrain != cfg.env.terrain:
+        if source is not None and terrain != cfg.terrain:
             raise ValueError("Playback terrain differs from the saved configuration")
-        cfg.env.terrain = terrain
-    cfg.env.num_envs = num_envs
+        cfg.terrain = terrain
+    cfg.num_envs = num_envs
     path = Path(checkpoint_file).expanduser().resolve() if checkpoint_file is not None else None
     record_video = path is not None and video
-    torch.manual_seed(cfg.env.seed)
+    torch.manual_seed(cfg.seed)
     env = make_env(
         cfg,
         device=device,
@@ -69,7 +68,7 @@ def make_playback(
             if snapshot["geometry_hash"] != command.surface.geometry_hash:
                 raise ValueError("Playback terrain geometry differs from the saved task")
             original = AnalyticHeads(saved_cfg, env.scene["robot"], command.surface, device=env.device)
-            if checkpoint["spec_hash"] != original.spec.hash:
+            if checkpoint["spec_hash"] != original.hash:
                 raise ValueError("Checkpoint task spec does not match the saved configuration and current robot")
             model = checkpoint_actor(checkpoint).to(env.device)
             _restore_curriculum(command, checkpoint)

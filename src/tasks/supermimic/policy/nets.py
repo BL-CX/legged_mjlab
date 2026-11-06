@@ -9,18 +9,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..envs.mdp.observations import CRITIC_DIM, OBS_DIM, OBS_TERMS
 from ..world_model.dynamics import MLP
-from ..world_model.state_spec import (
-    ACTION_DIM,
-    OBSERVATION_DIM,
-    OBSERVATION_TERM_DIMS,
-    PRIVILEGED_DIM,
-)
+from ..world_model.state_spec import StateSpec
 
 
 @dataclass
 class PolicyCfg:
-    history: int = 5
     expert_num: int = 8
     expert_hidden: tuple[int, ...] = (512, 256, 256)
     latent_dim: int = 32
@@ -37,9 +32,9 @@ class CriticCfg:
 class HistoryEncoder(nn.Module):
     """Shared features and grouped expert projections, combined by learned gates."""
 
-    def __init__(self, cfg: PolicyCfg):
+    def __init__(self, cfg: PolicyCfg, history_length: int):
         super().__init__()
-        width = OBSERVATION_DIM * cfg.history
+        width = OBS_DIM * history_length
         self.expert_num, self.latent_dim = cfg.expert_num, cfg.latent_dim
         self.backbone = nn.Sequential(
             MLP(width, cfg.expert_hidden[:-1], cfg.expert_num * cfg.expert_hidden[-1], act=nn.ELU), nn.ELU()
@@ -58,15 +53,17 @@ class HistoryEncoder(nn.Module):
 class Policy(nn.Module):
     """Encode frame-major history and concatenate its latent with the current frame."""
 
-    def __init__(self, cfg: PolicyCfg):
+    def __init__(self, cfg: PolicyCfg, history_length: int = 5):
         super().__init__()
         self.cfg = cfg
-        self.observation_dim, self.action_dim, self.history_length = OBSERVATION_DIM, ACTION_DIM, cfg.history
+        self.observation_dim = OBS_DIM
+        self.action_dim = StateSpec.act_dim
+        self.history_length = history_length
         self.history_order = "frame_major_oldest_first"
-        frame_scale = torch.cat([torch.full((n,), 1.0 / s) for n, s in zip(OBSERVATION_TERM_DIMS, cfg.obs_term_scale)])
-        self.register_buffer("scale", frame_scale.repeat(cfg.history))
-        self.encoder = HistoryEncoder(cfg)
-        self.actor = MLP(cfg.latent_dim + OBSERVATION_DIM, cfg.actor_hidden, ACTION_DIM, act=nn.ELU)
+        frame_scale = torch.cat([torch.full((n,), 1.0 / s) for (_, n), s in zip(OBS_TERMS, cfg.obs_term_scale)])
+        self.register_buffer("scale", frame_scale.repeat(history_length))
+        self.encoder = HistoryEncoder(cfg, history_length)
+        self.actor = MLP(cfg.latent_dim + OBS_DIM, cfg.actor_hidden, self.action_dim, act=nn.ELU)
 
     def forward(self, obs_hist: torch.Tensor) -> torch.Tensor:
         history = obs_hist.reshape(-1, self.history_length * self.observation_dim) * self.scale
@@ -78,7 +75,7 @@ class Critic(nn.Module):
 
     def __init__(self, cfg: CriticCfg):
         super().__init__()
-        self.mlp = MLP(PRIVILEGED_DIM, cfg.hidden, 1)
+        self.mlp = MLP(CRITIC_DIM, cfg.hidden, 1)
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
         return self.mlp(feat).squeeze(-1)

@@ -18,10 +18,10 @@ class ReplayRecorder(RecorderTerm):
         super().__init__(cfg, env)
         spec = self.command.model.spec
         self.buffer = ReplayBuffer(
-            env.num_envs, cfg.params["capacity"], spec.state_dim, spec.act_dim, spec.context_dim, env.device
+            env.num_envs, cfg.params["capacity"], spec.state_dim, spec.act_dim, spec.xi_dim, env.device
         )
         self.prev_s = torch.zeros(env.num_envs, spec.state_dim, device=env.device)
-        self.prev_xi = torch.zeros(env.num_envs, spec.context_dim, device=env.device)
+        self.prev_xi = torch.zeros(env.num_envs, spec.xi_dim, device=env.device)
         self.ep_start = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
         self.clean_action = None
 

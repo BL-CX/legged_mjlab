@@ -1,6 +1,6 @@
 """Train SuperMimic.  Example:
 
-.venv/bin/python -m src.tasks.supermimic.scripts.train --task.env.num-envs 1024
+.venv/bin/python -m src.tasks.supermimic.scripts.train --env.num-envs 1024
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ if (
 def main() -> None:
     import tyro
 
-    from ..config import TrainConfig
+    from ..config.go2.rl_cfg import TrainConfig
     from ..training.loop import Trainer
 
     cfg = tyro.cli(TrainConfig)

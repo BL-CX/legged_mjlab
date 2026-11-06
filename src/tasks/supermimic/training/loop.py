@@ -14,8 +14,9 @@ import torch
 from mjlab.utils.torch import configure_torch_backends
 from torch.utils.tensorboard import SummaryWriter
 
-from ..config import FRAMEWORK, TrainConfig, robot_settings
-from ..envs.velocity_env_cfg import make_env
+from ..config import FRAMEWORK, robot_settings
+from ..config.go2.env_cfg import make_env
+from ..config.go2.rl_cfg import TrainConfig
 from ..imagination.policy_trainer import PolicyTrainer
 from ..policy.nets import Critic, Policy
 from ..world_model.wm_trainer import WorldModelTrainer
@@ -31,27 +32,25 @@ class Trainer:
         self.is_main = self.rank == 0
         if self.world > 1:
             cfg.device = f"cuda:{local_rank}"
-            if cfg.task.env.terrain == "rough" and cfg.task.env.terrain_seed is None:
-                cfg.task.env.terrain_seed = cfg.task.env.seed
+            if cfg.env.terrain == "rough" and cfg.env.terrain_seed is None:
+                cfg.env.terrain_seed = cfg.env.seed
             cfg.wm_trainer.lr *= self.world**0.5
             cfg.policy_trainer.lr *= self.world**0.5
             cfg.policy_trainer.critic_lr *= self.world**0.5
         configure_torch_backends()
-        task_cfg = deepcopy(cfg.task)
-        task_cfg.env.seed += 1000 * self.rank
-        torch.manual_seed(task_cfg.env.seed)
+        env_cfg = deepcopy(cfg.env)
+        env_cfg.seed += 1000 * self.rank
+        torch.manual_seed(env_cfg.seed)
         self.device = torch.device(cfg.device)
         self.log_dir = Path(cfg.log_root).expanduser().resolve() / cfg.run_name
         self.writer = None
         self.env = None
         try:
-            self.env = env = make_env(task_cfg, device=str(self.device), record=True)
+            self.env = env = make_env(env_cfg, device=str(self.device), record=True)
             self.command = env.command_manager.get_term("velocity")
             self.task = self.command.model
-            cfg.policy.history = cfg.task.env.num_obs_history
-            cfg.policy_trainer.history = cfg.policy.history
             self.wm = WorldModel(cfg.world_model, self.task, self.device)
-            self.policy = Policy(cfg.policy).to(self.device)
+            self.policy = Policy(cfg.policy, history_length=cfg.env.history_length).to(self.device)
             self.critic = Critic(cfg.critic).to(self.device)
             for module in (self.wm, self.policy, self.critic):
                 broadcast_params(module)
@@ -71,10 +70,10 @@ class Trainer:
                 (self.log_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2, default=str) + "\n")
                 snapshot = {
                     "framework": FRAMEWORK,
-                    "config": asdict(self.command.task_cfg),
-                    "spec_hash": self.task.spec.hash,
+                    "config": asdict(self.command.env_cfg),
+                    "spec_hash": self.task.hash,
                     "geometry_hash": self.command.surface.geometry_hash,
-                    "robot": robot_settings(),
+                    "robot": robot_settings(self.command.env_cfg),
                 }
                 (self.log_dir / "task_config.json").write_text(json.dumps(snapshot, indent=2) + "\n")
                 print(f"[INFO] Logging experiment in directory: {self.log_dir}", flush=True)
@@ -96,7 +95,7 @@ class Trainer:
             "policy_opt": self.policy_trainer.opt.state_dict(),
             "critic_opt": self.policy_trainer.critic_opt.state_dict(),
             "config": asdict(self.cfg),
-            "spec_hash": self.task.spec.hash,
+            "spec_hash": self.task.hash,
             "curriculum": self.command.curriculum_state_dict(),
         }
         path = self.log_dir / name
@@ -112,7 +111,7 @@ class Trainer:
         for name in ("world_model", "wm_trainer", "policy", "critic", "policy_trainer"):
             if asdict(getattr(saved, name)) != asdict(getattr(self.cfg, name)):
                 raise ValueError(f"Resume requires unchanged {name} settings")
-        if checkpoint.get("spec_hash") != self.task.spec.hash:
+        if checkpoint.get("spec_hash") != self.task.hash:
             raise ValueError("Resume requires unchanged task state, rewards, and native physics")
         self.wm.load_state_dict(checkpoint["wm"])
         self.policy.load_state_dict(checkpoint["policy"])
@@ -148,7 +147,7 @@ class Trainer:
             while self.iteration < sch.total_iterations:
                 t0 = time.perf_counter()
                 action = self.act(history)
-                executed = action + cfg.task.env.action_noise_std * torch.randn_like(action)
+                executed = action + cfg.env.action_noise_std * torch.randn_like(action)
                 self.recorder.clean_action = action
                 observations, reward, terminated, truncated, _ = env.step(executed)
                 done = terminated | truncated

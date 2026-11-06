@@ -10,31 +10,20 @@ import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import wrap_to_pi
 
-from ...world_model.state_spec import (
-    ANGULAR_BODY,
-    COMMAND_DIM,
-    COMMAND_OVERRIDE,
-    COMMAND_TIMER,
-    CONTEXT_RANGES,
-    CONTEXT_ZERO_PROBABILITY,
-    FORWARD,
-    HEADING_TARGET,
-    STANDING,
-    YAW,
-    TaskState,
-)
+from ...world_model.state_spec import Memory, Physical, TaskState
 from ..sim_context import SimContext
 from ..state_io import StateIO
 from .curriculums import TerrainCurriculum
+from .observations import OBS_DIM
 from .terrains import PlaneSurface, TerrainMap, TerrainSurface
 
 if TYPE_CHECKING:
-    from ...config import TaskConfig
+    from ...config.go2.env_cfg import EnvCfg
 
 
-def sample_commands(cfg, context, yaw):
+def sample_commands(cfg, yaw):
     """Sample forward overrides before heading feedback and standing-command zeroing."""
-    bounds = context[:, CONTEXT_RANGES].reshape(-1, COMMAND_DIM, 2)
+    bounds = yaw.new_tensor(cfg.initial_ranges).expand(yaw.shape[0], -1, -1)
     random = torch.rand_like(bounds[..., 0])
     command = bounds[..., 0] + random * (bounds[..., 1] - bounds[..., 0])
     heading = cfg.heading_range[0] + torch.rand_like(yaw) * (cfg.heading_range[1] - cfg.heading_range[0])
@@ -63,22 +52,23 @@ def heading_command(cfg, command, yaw, heading, standing):
 
 def advance_commands(cfg, state, physical, dt):
     """Refresh commands at the final heading while retaining fixed command overrides."""
-    memory = state.memory
-    sampled, timer, heading, standing, forward = sample_commands(cfg, state.context, physical[:, YAW])
-    expired = memory[:, COMMAND_TIMER] - dt <= 0.0
+    memory = Memory.split(state.memory)
+    yaw = Physical.split(physical).pose[:, 2]
+    sampled, timer, heading, standing, forward = sample_commands(cfg, yaw)
+    expired = memory.command_timer.squeeze(-1) - dt <= 0.0
     command = torch.where(expired[:, None], sampled, state.command)
-    timer = torch.where(expired, timer, memory[:, COMMAND_TIMER] - dt)
-    heading = torch.where(expired, heading, memory[:, HEADING_TARGET])
-    standing = torch.where(expired, standing, memory[:, STANDING].bool())
-    forward = torch.where(expired, forward, memory[:, FORWARD].bool())
-    command = heading_command(cfg, command, physical[:, YAW], heading, standing)
-    command = torch.where(memory[:, COMMAND_OVERRIDE, None].bool(), state.command, command)
+    timer = torch.where(expired, timer, memory.command_timer.squeeze(-1) - dt)
+    heading = torch.where(expired, heading, memory.heading_target.squeeze(-1))
+    standing = torch.where(expired, standing, memory.standing.squeeze(-1).bool())
+    forward = torch.where(expired, forward, memory.forward.squeeze(-1).bool())
+    command = heading_command(cfg, command, yaw, heading, standing)
+    command = torch.where(memory.command_override.bool(), state.command, command)
     return command, timer, heading, standing, forward
 
 
 @dataclass(kw_only=True)
 class VelocityCommandCfg(CommandTermCfg):
-    task_cfg: TaskConfig
+    env_cfg: EnvCfg
     terrain_map: TerrainMap
     play: bool = False
     no_terminations: bool = False
@@ -95,7 +85,7 @@ class VelocityCommand(CommandTerm):
         from ...world_model.heads import AnalyticHeads
 
         super().__init__(cfg, env)
-        self.task_cfg = cfg.task_cfg
+        self.env_cfg = cfg.env_cfg
         self.robot = env.scene["robot"]
         self.map = cfg.terrain_map
         terrain = env.scene.terrain
@@ -105,19 +95,19 @@ class VelocityCommand(CommandTerm):
             if self.map.plane
             else TerrainSurface.from_model(env.sim.mj_model, self.device, terrain_map=self.map)
         )
-        self.model = AnalyticHeads(self.task_cfg, self.robot, self.surface, device=self.device)
+        self.model = AnalyticHeads(self.env_cfg, self.robot, self.surface, device=self.device)
         self.state_io = StateIO(env, self.model.spec.surface_height)
-        self.sim_context = SimContext(env, self.model.spec)
+        self.sim_context = SimContext(env)
         spec = self.model.spec
         self.state = TaskState(
-            torch.zeros(self.num_envs, spec.physical_dim, device=self.device),
-            torch.zeros(self.num_envs, spec.memory_dim, device=self.device),
-            torch.zeros(self.num_envs, spec.command_dim, device=self.device),
-            torch.zeros(self.num_envs, spec.context_dim, device=self.device),
+            torch.zeros(self.num_envs, spec.delta_dim, device=self.device),
+            torch.zeros(self.num_envs, 42, device=self.device),
+            torch.zeros(self.num_envs, 3, device=self.device),
+            torch.zeros(self.num_envs, spec.xi_dim, device=self.device),
         )
         self.final_state = self.state
         # Observation-manager shape probes only read this buffer and consume no RNG.
-        self.frame = torch.zeros(self.num_envs, spec.observation_dim, device=self.device)
+        self.frame = torch.zeros(self.num_envs, OBS_DIM, device=self.device)
         self.command_steps = 0
         self.last_metrics = {}
         self.reward_terms = {}
@@ -132,7 +122,7 @@ class VelocityCommand(CommandTerm):
         self.terrain_curriculum = TerrainCurriculum(
             self.map,
             self.num_envs,
-            enabled=self.task_cfg.env.terrain_curriculum,
+            enabled=self.env_cfg.terrain_curriculum,
             device=self.device,
         )
         if not self.map.plane:
@@ -147,12 +137,12 @@ class VelocityCommand(CommandTerm):
         """Fix commands for all environments, or restore command sampling with None."""
         if commands is None:
             self._commands = None
-            self.state.memory[:, COMMAND_OVERRIDE] = 0
+            Memory.split(self.state.memory).command_override.zero_()
         else:
             values = torch.as_tensor(commands, dtype=torch.float32, device=self.device)
             self._commands = values.expand(self.num_envs, -1).clone()
             self.state.command.copy_(self._commands)
-            self.state.memory[:, COMMAND_OVERRIDE] = 1
+            Memory.split(self.state.memory).command_override.fill_(1)
 
     def reset_origins(self, ids):
         if self.map.plane:
@@ -166,12 +156,6 @@ class VelocityCommand(CommandTerm):
         terrain.terrain_levels[ids] = curriculum.levels[ids]
         terrain.terrain_types[ids] = curriculum.family_ids[ids]
 
-    def _context(self, ids):
-        context = self.sim_context.read(ids)
-        context[:, CONTEXT_RANGES] = context.new_tensor(self.task_cfg.commands.initial_ranges).flatten()
-        context[:, CONTEXT_ZERO_PROBABILITY] = self.task_cfg.commands.rel_standing_envs
-        return context
-
     def reset(self, env_ids):
         # Reset events have written qpos/qvel, but native forward() has not run yet.
         self._reset_ids = env_ids
@@ -182,10 +166,10 @@ class VelocityCommand(CommandTerm):
         del dt
         if self._reset_ids is not None:
             ids = self._reset_ids
-            reset = self.model.initialize_state(self.state_io.read()[ids], self._context(ids))
+            reset = self.model.initialize_state(self.state_io.read()[ids], self.sim_context.read(ids))
             if self._commands is not None:
                 reset.command.copy_(self._commands[ids])
-                reset.memory[:, COMMAND_OVERRIDE] = 1
+                Memory.split(reset.memory).command_override.fill_(1)
             for name in ("physical", "memory", "command", "context"):
                 getattr(self.state, name)[ids] = getattr(reset, name)
             self.terrain_curriculum.reset(ids, self.robot.data.root_link_pos_w[ids, :2])
@@ -229,7 +213,7 @@ class VelocityCommand(CommandTerm):
         )
         self.final_state = final
         self.state = final.detached_clone()
-        self.reward_terms = self.model.reward_terms(before, action, final, terminated.float())
+        self.reward_terms = self.model.reward_terms(before, action, final)
         if not self.cfg.play:
             self.command_steps += 1
             self.terrain_curriculum.control_steps = env.common_step_counter
@@ -243,7 +227,7 @@ class VelocityCommand(CommandTerm):
         self.last_metrics = {}
         for name, value in self.reward_terms.items():
             mean = value.mean()
-            weight = getattr(self.task_cfg.reward.scales, name)
+            weight = getattr(self.env_cfg.reward.scales, name)
             self.last_metrics[f"task/reward_raw/{name}"] = mean
             self.last_metrics[f"task/reward/{name}"] = env.step_dt * weight * mean
             self.last_metrics[f"Reward_Rate/{name}"] = weight * mean
@@ -253,8 +237,8 @@ class VelocityCommand(CommandTerm):
                 "task/tracking_linear_mse": (velocity[:, :2] - before.command[:, :2]).square().sum(-1).mean(),
                 "task/tracking_angular_mse": (velocity[:, 2] - before.command[:, 2]).square().mean(),
                 "task/action_rms": action.square().mean().sqrt(),
-                "task/base_height": self.model.spec.base_height(final).mean(),
-                "task/fast_yaw": (final.physical[:, ANGULAR_BODY][:, 2].abs() > 3.0).float().mean(),
+                "task/base_height": Physical.split(final.physical).height.mean(),
+                "task/fast_yaw": (Physical.split(final.physical).angular_body[:, 2].abs() > 3.0).float().mean(),
             }
         )
         return terminated
@@ -272,7 +256,7 @@ class VelocityCommand(CommandTerm):
         with server.gui.add_folder("Velocity control"):
             self._enabled = server.gui.add_checkbox("Manual commands (all environments)", initial_value=False)
             axes = ("Forward velocity vx (m/s)", "Lateral velocity vy (m/s)", "Yaw rate wz (rad/s)")
-            for label, bounds in zip(axes, self.task_cfg.commands.initial_ranges, strict=True):
+            for label, bounds in zip(axes, self.env_cfg.commands.initial_ranges, strict=True):
                 limit = max(abs(bounds[0]), abs(bounds[1]))
                 maximum = server.gui.add_slider(f"Range: {label}", min=0.1, max=10.0, step=0.1, initial_value=limit)
                 slider = server.gui.add_slider(label, min=-limit, max=limit, step=0.05, initial_value=0.0)

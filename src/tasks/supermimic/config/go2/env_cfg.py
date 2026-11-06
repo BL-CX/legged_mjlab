@@ -1,11 +1,11 @@
 # Copyright (c) 2026-2027 zh
-"""Native manager configuration and construction for quadruped velocity control."""
+"""Go2 velocity environment, observations, commands, and rewards."""
 
 from __future__ import annotations
 
+import math
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
@@ -19,13 +19,9 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.viewer import ViewerConfig
 
-from src.assets.robots.unitree_go2.go2_constants import (
-    ACTION_SCALE,
-    DELAYED_CFG,
-    get_go2_robot_cfg,
-)
+from src.assets.robots.unitree_go2.go2_constants import DELAYED_CFG, get_go2_robot_cfg
 
-from .mdp.commands import (
+from ...envs.mdp.commands import (
     VelocityCommandCfg,
     initialize_terrain,
     observation,
@@ -33,15 +29,110 @@ from .mdp.commands import (
     reward_term,
     task_termination,
 )
-from .mdp.terrains import TerrainMap
-
-if TYPE_CHECKING:
-    from ..config import TaskConfig
+from ...envs.mdp.terrains import TerrainMap
 
 
 @dataclass
-class EnvConfig:
-    """Arguments for native physics construction and task terrain geometry."""
+class NoiseScales:
+    """Uniform-noise half amplitudes in each observation term's units."""
+
+    base_ang_vel: float = 0.2  # rad/s.
+    projected_gravity: float = 0.05
+    joint_pos: float = 0.01  # rad.
+    joint_vel: float = 1.5  # rad/s.
+
+
+@dataclass
+class NoiseCfg:
+    """Apply noise to each new proprioceptive frame once."""
+
+    add_noise: bool = True
+    noise_level: float = 1.0
+    noise_scales: NoiseScales = field(default_factory=NoiseScales)
+
+
+@dataclass
+class CommandsCfg:
+    """HIM sampling and heading feedback with body translation and world yaw tracking."""
+
+    initial_ranges: tuple[tuple[float, float], tuple[float, float], tuple[float, float]] = (
+        (-1.0, 1.0),
+        (-1.0, 1.0),
+        (-2.0, 2.0),
+    )
+    resampling_time: tuple[float, float] = (4.0, 12.0)
+    heading_range: tuple[float, float] = (-3.14, 3.14)
+    heading_control_stiffness: float = 0.5
+    rel_standing_envs: float = 0.1
+    rel_forward_envs: float = 0.05
+
+
+@dataclass
+class GaitCfg:
+    """Foot-name gait phases with soft contacts used only in imagination."""
+
+    period: float = 0.6
+    offsets: dict[str, float] = field(default_factory=lambda: {"FR": 0.0, "FL": 0.5, "RR": 0.5, "RL": 0.0})
+    stance_fraction: float = 0.56
+    command_threshold: float = 0.1
+
+
+@dataclass
+class PostureCfg:
+    walking_threshold: float = 0.1
+    running_threshold: float = 1.5
+    std_standing: dict[str, float] = field(default_factory=lambda: {"hip": 0.05, "thigh": 0.1, "calf": 0.15})
+    std_walking: dict[str, float] = field(default_factory=lambda: {"hip": 0.15, "thigh": 0.35, "calf": 0.5})
+    std_running: dict[str, float] = field(default_factory=lambda: {"hip": 0.15, "thigh": 0.35, "calf": 0.5})
+
+
+@dataclass
+class RewardScales:
+    track_linear_velocity: float = 2.0
+    track_angular_velocity: float = 2.0
+    action_rate_l2: float = -0.1
+    joint_pos_limits: float = -10.0
+    body_ang_vel: float = -0.05
+    foot_gait: float = 0.5
+    feet_air_time: float = 0.2
+    pose: float = 1.0
+    lin_vel_z: float = -2.0
+    body_orientation_l2: float = -0.2
+    smoothness: float = -0.01
+    stand_still: float = -2.0
+    stand_still_joint_vel_l2: float = -1.0
+    foot_slip: float = -0.1
+    joint_acc_l2: float = -3.0e-7
+    stumble: float = -0.1
+    joint_torques_l2: float = -2.0e-5
+    leg_collision: float = -1.0
+    angular_momentum: float = -0.025
+    hip_pos: float = -1.0
+    soft_landing: float = -3.0e-3
+
+
+@dataclass
+class RewardCfg:
+    """Body-frame translation and HIM reward rates."""
+
+    tracking_linear_variance: float = 0.25
+    tracking_angular_variance: float = 0.25
+    fall_angle: float = math.radians(70)
+    fall_softness_deg: float = 5.0
+    stand_still_command_threshold: float = 0.1
+    foot_slip_command_threshold: float = 0.1
+    stumble_ratio: float = 5.0
+    leg_collision_force_threshold: float = 1.0
+    hip_pos_command_threshold: float = 0.1
+    soft_landing_command_threshold: float = 0.1
+    gait: GaitCfg = field(default_factory=GaitCfg)
+    posture: PostureCfg = field(default_factory=PostureCfg)
+    scales: RewardScales = field(default_factory=RewardScales)
+
+
+@dataclass
+class EnvCfg:
+    """Shared settings passed directly to native construction and analytic heads."""
 
     num_envs: int = 4096
     scene_extent: float = 2.0
@@ -49,10 +140,9 @@ class EnvConfig:
     episode_length_s: float = 20.0
     action_noise_std: float = 0.1
     replay_capacity: int = 1000
-    num_obs_history: int = 5
+    history_length: int = 5
     timestep: float = 0.005
     decimation: int = 4
-    action_scale: dict[str, float] = field(default_factory=lambda: ACTION_SCALE.copy())
     domain_randomization: bool = True
     terrain: str = "flat"
     terrain_seed: int | None = None
@@ -64,23 +154,31 @@ class EnvConfig:
     field_resolution_m: float = 0.02
     field_half_m: float = 6.5
     field_cache_dir: str = "logs/heightfields"
+    noise: NoiseCfg = field(default_factory=NoiseCfg)
+    commands: CommandsCfg = field(default_factory=CommandsCfg)
+    reward: RewardCfg = field(default_factory=RewardCfg)
+
+    @classmethod
+    def from_dict(cls, values: dict) -> EnvCfg:
+        from .. import _update_config
+
+        cfg = cls()
+        _update_config(cfg, values)
+        return cfg
 
 
 def make_env_cfg(
-    cfg: TaskConfig | None = None,
+    cfg: EnvCfg | None = None,
     *,
     play: bool = False,
     no_terminations: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """Configure native managers around the shared analytic task mathematics."""
-    from ..config import TaskConfig
-
-    cfg = deepcopy(cfg) if cfg is not None else TaskConfig()
+    cfg = deepcopy(cfg) if cfg is not None else EnvCfg()
     if play:
         cfg.noise.add_noise = False
-        cfg.env.terrain_curriculum = False
-    env = cfg.env
-    terrain_map = TerrainMap(env)
+        cfg.terrain_curriculum = False
+    terrain_map = TerrainMap(cfg)
     feet = r".*_foot_collision"
     sensors = (
         ContactSensorCfg(
@@ -106,8 +204,8 @@ def make_env_cfg(
         entities={"robot": get_go2_robot_cfg(DELAYED_CFG)},
         terrain=terrain_map.entity_cfg(),
         sensors=sensors,
-        num_envs=env.num_envs,
-        extent=env.scene_extent,
+        num_envs=cfg.num_envs,
+        extent=cfg.scene_extent,
     )
 
     actions = {
@@ -115,7 +213,7 @@ def make_env_cfg(
             entity_name="robot",
             actuator_names=(".*",),
             use_default_offset=True,
-            scale=env.action_scale,
+            scale=0.25,
         ),
     }
 
@@ -139,7 +237,7 @@ def make_env_cfg(
             },
         ),
     }
-    if env.domain_randomization:
+    if cfg.domain_randomization:
         for name, axis, distribution, bounds in (
             ("slide", 0, "uniform", (0.3, 1.5)),
             ("spin", 1, "log_uniform", (1e-4, 2e-2)),
@@ -191,7 +289,7 @@ def make_env_cfg(
         ),
         "history": ObservationGroupCfg(
             terms={"frame": ObservationTermCfg(func=observation)},
-            history_length=env.num_obs_history,
+            history_length=cfg.history_length,
             flatten_history_dim=False,
             enable_corruption=False,
         ),
@@ -208,7 +306,7 @@ def make_env_cfg(
         events=events,
         commands={
             "velocity": VelocityCommandCfg(
-                task_cfg=cfg, terrain_map=terrain_map, play=play, no_terminations=no_terminations
+                env_cfg=cfg, terrain_map=terrain_map, play=play, no_terminations=no_terminations
             )
         },
         rewards=rewards,
@@ -216,15 +314,15 @@ def make_env_cfg(
         metrics={},
         terminations=terminations,
         auto_reset=True,
-        decimation=env.decimation,
-        episode_length_s=env.episode_length_s,
-        seed=env.seed,
+        decimation=cfg.decimation,
+        episode_length_s=cfg.episode_length_s,
+        seed=cfg.seed,
         sim=SimulationCfg(
             nconmax=None,
             njmax=300,
             broadphase="nxn",
             mujoco=MujocoCfg(
-                timestep=env.timestep,
+                timestep=cfg.timestep,
                 solver="cg",
                 iterations=10,
                 ls_iterations=20,
@@ -245,7 +343,7 @@ def make_env_cfg(
 
 
 def make_env(
-    cfg: TaskConfig | None = None,
+    cfg: EnvCfg | None = None,
     *,
     device: str = "cpu",
     play: bool = False,
@@ -262,9 +360,9 @@ def make_env(
     if video_width is not None:
         env_cfg.viewer.width = video_width
     if record:
-        from ..data.recorder import ReplayRecorderCfg
+        from ...data.recorder import ReplayRecorderCfg
 
         env_cfg.recorders["replay"] = ReplayRecorderCfg(
-            params={"capacity": env_cfg.commands["velocity"].task_cfg.env.replay_capacity}
+            params={"capacity": env_cfg.commands["velocity"].env_cfg.replay_capacity}
         )
     return ManagerBasedRlEnv(env_cfg, device=device, render_mode=render_mode)
