@@ -1,13 +1,14 @@
 """Unitree Go2 constants."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import mujoco
-
-from src import SRC_PATH
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.spec_config import CollisionCfg
+
+from src import SRC_PATH
 
 ##
 # MJCF and assets.
@@ -108,23 +109,87 @@ GO2_ARTICULATION = EntityArticulationInfoCfg(
 )
 
 
-def get_go2_robot_cfg() -> EntityCfg:
-    """Get a fresh Go2 robot configuration instance.
+DEFAULT_CFG = EntityCfg(
+    init_state=INIT_STATE,
+    collisions=(FULL_COLLISION,),
+    spec_fn=get_spec,
+    articulation=GO2_ARTICULATION,
+)
 
-    Returns a new EntityCfg instance each time to avoid mutation issues when
-    the config is shared across multiple places.
-    """
-    return EntityCfg(
-        init_state=INIT_STATE,
-        collisions=(FULL_COLLISION,),
-        spec_fn=get_spec,
-        articulation=GO2_ARTICULATION,
-    )
+# Delayed drives and the lower stance used for velocity control.
+DELAYED_CFG = EntityCfg(
+    init_state=EntityCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.29),
+        joint_pos={
+            ".*L_hip_joint": 0.1,
+            ".*R_hip_joint": -0.1,
+            ".*_thigh_joint": 0.9,
+            ".*_calf_joint": -1.8,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    collisions=(
+        CollisionCfg(
+            geom_names_expr=(r".*_collision\d*",),
+            condim={_foot_regex: 3, r".*_collision\d*": 1},
+            priority={_foot_regex: 1, ".*": 0},
+            friction={_foot_regex: (1.0, 5e-3, 5e-4)},
+            solref=(0.01, 1.0),
+            contype=1,
+            conaffinity=1,
+        ),
+    ),
+    spec_fn=get_spec,
+    articulation=EntityArticulationInfoCfg(
+        actuators=(
+            BuiltinPositionActuatorCfg(
+                target_names_expr=(".*_hip_joint",),
+                stiffness=20.0,
+                damping=1.0,
+                effort_limit=23.7,
+                armature=0.01,
+                delay_min_lag=0,
+                delay_max_lag=4,
+                delay_hold_prob=0.5,
+                delay_update_period=10,
+            ),
+            BuiltinPositionActuatorCfg(
+                target_names_expr=(".*_thigh_joint",),
+                stiffness=20.0,
+                damping=1.0,
+                effort_limit=23.7,
+                armature=0.01,
+                delay_min_lag=0,
+                delay_max_lag=4,
+                delay_hold_prob=0.5,
+                delay_update_period=10,
+            ),
+            BuiltinPositionActuatorCfg(
+                target_names_expr=(".*_calf_joint",),
+                stiffness=40.0,
+                damping=2.0,
+                effort_limit=45.43,
+                armature=0.01,
+                delay_min_lag=0,
+                delay_max_lag=4,
+                delay_hold_prob=0.5,
+                delay_update_period=10,
+            ),
+        ),
+        soft_joint_pos_limit_factor=0.9,
+    ),
+)
+
+ACTION_SCALE = {".*_hip_joint": 0.25, ".*_thigh_joint": 0.5, ".*_calf_joint": 0.5}
+
+
+def get_go2_robot_cfg(cfg: EntityCfg = DEFAULT_CFG) -> EntityCfg:
+    """Return an independent native Go2 configuration."""
+    return deepcopy(cfg)
 
 
 if __name__ == "__main__":
     import mujoco.viewer as viewer
-
     from mjlab.entity.entity import Entity
 
     robot = Entity(get_go2_robot_cfg())
