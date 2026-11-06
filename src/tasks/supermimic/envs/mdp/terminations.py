@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Hard fall detection and differentiable termination probabilities."""
 
 import math

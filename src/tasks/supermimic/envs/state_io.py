@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Read instantaneous Go2 physical features in the task state order."""
 
 import torch

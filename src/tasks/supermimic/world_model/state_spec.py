@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Quadruped tensor views, canonical features, and world-model residuals."""
 
 from __future__ import annotations

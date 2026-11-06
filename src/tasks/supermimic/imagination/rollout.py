@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Imagined rollouts through the world model (paper §3.3)."""
 
 from __future__ import annotations

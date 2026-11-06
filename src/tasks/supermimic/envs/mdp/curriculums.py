@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Performance-based Go2 terrain progression."""
 
 import numpy as np

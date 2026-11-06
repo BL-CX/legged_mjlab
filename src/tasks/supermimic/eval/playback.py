@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Load a blind policy and run it in the native velocity environment."""
 
 from __future__ import annotations

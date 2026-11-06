@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Read randomized simulator parameters independently from instantaneous state."""
 
 import torch

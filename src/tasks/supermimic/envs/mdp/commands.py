@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """HIM velocity sampling and heading feedback shared by real and imagined task state."""
 
 from __future__ import annotations

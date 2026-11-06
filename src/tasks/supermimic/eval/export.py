@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Load saved policies once for playback or explicit deployment export."""
 
 from __future__ import annotations

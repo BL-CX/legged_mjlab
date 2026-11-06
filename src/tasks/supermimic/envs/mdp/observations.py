@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Analytic actor and critic observations shared by real and imagined states."""
 
 import torch

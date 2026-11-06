@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Reference terrain geometry and differentiable 0.02 m height queries.
 
 Initialization samples MuJoCo heightfield triangles. Runtime queries clamp to the raster boundary."""

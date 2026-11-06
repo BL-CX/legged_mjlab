@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Body-frame velocity tracking and the 21 HIM reward rates before control-period scaling."""
 
 import torch

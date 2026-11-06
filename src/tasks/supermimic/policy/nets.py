@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Go2 mixture-of-experts history policy and privileged critic."""
 
 from __future__ import annotations

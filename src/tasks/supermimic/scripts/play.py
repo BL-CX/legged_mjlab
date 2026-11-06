@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Play a Go2 SuperMimic policy or inspect the velocity task."""
 
 import os

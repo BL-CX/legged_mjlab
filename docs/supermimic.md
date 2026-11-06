@@ -11,8 +11,9 @@ Paths below are relative to `src/tasks/supermimic/`.
 
 | Module | Responsibility |
 | --- | --- |
-| `config.py` | Task defaults and the composed `TrainConfig` tree |
-| `envs/velocity_env_cfg.py` | Native MJLab configuration and environment construction |
+| `config/go2/env_cfg.py` | Go2 environment settings, native managers and environment construction |
+| `config/go2/rl_cfg.py` | Go2 training defaults and the composed `TrainConfig` tree |
+| `config/__init__.py` | Configuration snapshots and checkpoint protocol |
 | `envs/state_io.py`, `envs/sim_context.py` | Simulator features and randomized context |
 | `envs/mdp/` | Velocity commands, observations, rewards, termination, terrain and progression |
 | `world_model/state_spec.py` | Go2 coordinates, tensor packing, canonical inputs, integration and error coordinates |
@@ -31,17 +32,22 @@ Paths below are relative to `src/tasks/supermimic/`.
 | `training/schedule.py`, `training/distributed.py` | Reference cosine schedule and explicit gradient averaging |
 | `eval/`, `scripts/` | Playback, export, velocity evaluation and thin command entry points |
 
-The root training tree owns `task`, `world_model`, `wm_trainer`, `policy`,
+The training tree owns `env`, `world_model`, `wm_trainer`, `policy`,
 `critic`, `policy_trainer` and `schedule`. Each learning component declares its
 own configuration beside its implementation. There is no flat algorithm budget
 object, separate learner facade, task registry adapter, or external driver.
 
 Robot settings live in `src/assets/robots/unitree_go2/go2_constants.py` as native
 MJLab actuator, articulation, collision and initial-state constants.
-`get_go2_robot_cfg(DELAYED_CFG)` returns an independent velocity-control preset. It preserves
-the task's original gains, delays, friction, default joints and soft limits.
-Other Go2 tasks retain their original robot preset. Camera, simulation and event
-values are constructed directly in `make_env_cfg`, without mirrored config classes.
+`get_go2_robot_cfg()` returns an independent entity with initial height 0.32 m,
+hip/thigh/calf gains 20/20/40, damping 1/1/2 and effort limits 23.5/23.5/45.
+Every actuator group uses delay lags 0–4, hold probability 0.5 and update period 10.
+Robot collisions use `contype=1`, `conaffinity=0` and foot friction 0.6 before task
+startup randomization. MJLab 1.6 loads meshes directly through `MjSpec.from_file()`.
+
+The velocity task defines `JointPositionActionCfg(scale=0.25)` directly in its
+environment configuration. Snapshots and export metadata read that actual action
+configuration. Camera, simulation and event values are also configured there.
 
 `make_env` returns `ManagerBasedRlEnv` directly. Native command, observation,
 reward, termination, event and recorder managers own the task lifecycle. The
@@ -50,12 +56,21 @@ frame history and partial-reset backfill. Terminal features are refreshed before
 scoring and captured by recorder hooks before automatic resets. Playback uses the
 same environment and native viewer controls.
 
-Physical, memory and context field-width tables in `StateSpec` derive every slice
-and dimension. Joint and foot order comes from the native robot. Observations,
-policy input scales and export metadata share one observation layout. The final
-quadruped protocol is fixed at 125 physical features, 42 memory features, 26 context
-features, 47 observations and 262 critic features; old layout/version switches and
-configuration validators have been removed.
+`Physical`, `Memory` and `Context` are named tensor views obtained with `split()`.
+There are no field registries, layout dictionaries or global slice aliases.
+`StateSpec` handles packed state, canonical features, integration and prediction
+errors; it does not initialize robot metadata, history or checkpoint identity.
+The packed state retains 125 physical features, 42 memory features and three
+commands. Context contains only the 16 randomized physics parameters used by the
+model: friction, encoder bias and COM offset. Terrain origins and standing
+probability are no longer copied into context, and command ranges come directly
+from environment settings. Observation and critic widths remain 47 and 262.
+
+Configuration follows one path: `TrainConfig.env` is passed to native construction,
+the velocity command and analytic task heads. History length is configured once as
+`env.history_length`; the policy receives it at construction, and policy training
+uses that same length. Action scale comes directly from the environment action term.
+The MoE experts, gates, history encoding and actor computations remain unchanged.
 
 ## Reference training protocol
 
@@ -105,7 +120,7 @@ Run from the repository root:
 .venv/bin/python -m src.tasks.supermimic.scripts.train \
   --device cuda:0 --run-name flat
 .venv/bin/python -m src.tasks.supermimic.scripts.train \
-  --device cuda:0 --run-name rough --task.env.terrain rough
+  --device cuda:0 --run-name rough --env.terrain rough
 .venv/bin/python -m src.tasks.supermimic.scripts.train \
   --resume /absolute/path/ckpt_latest.pt --schedule.total-iterations 400000
 ```
@@ -138,20 +153,25 @@ samples terrain rows on reset; saved command progress remains frozen.
 
 ## Version and validation
 
-This is training protocol `supermimic_velocity_v2`. Replacing WM loss scaling,
-normalization, replay sampling, initialization, actor loss and update scheduling
-changes training numerics. Older `supermimic_moe_v1` checkpoints are rejected with
-an explicit protocol error. Use the backed-up original revision for those runs;
-old optimizer states are not presented as equivalent continuation of this protocol.
+Snapshots use `supermimic_velocity_v3` because configuration paths and stored replay
+context changed. Earlier checkpoints use their original checkout. This revision
+preserves the preceding model inputs, state/reward mathematics, learning losses,
+MoE computations and optimizer updates; it changes their representation and
+configuration flow. Deployment policy inputs and outputs remain unchanged.
 
 Temporary validation scripts live outside the repository. They compare native
 robot presets, state packing, integration, analytic observations, commands, rewards
 and gradients against the preceding implementation. Real CPU trajectories cover
 flat/rough terrain, startup randomization, timeouts, partial resets and observation
-noise. States, contact timers, commands, masks and RNG match exactly. Native reward
-aggregation changes only float32 rounding from the order of multiplication and
-addition. Replay checks cover terminal rows, ring wrap, sampled histories and
+noise. States, contact timers, commands, rewards, masks and RNG match exactly for the
+representation refactor. Replay checks cover terminal rows, ring wrap, sampled histories and
 manual-reset episode boundaries.
+
+The tensor-view/configuration refactor is compared before the requested robot
+parameter update. With fixed physics, flat/rough trajectories and replay match
+exactly; after 24 real steps and six updates, WM, MoE and critic weights match
+exactly. Tiny Adam moment differences are within float32 accumulation rounding.
+The requested robot/control changes are then checked with fresh runs.
 
 CPU smoke runs cover training, checkpoint continuation, playback, velocity
 evaluation and TorchScript/ONNX export. Multi-GPU execution and long-run convergence
@@ -164,5 +184,7 @@ and its replanned commits.
 - quadruped_lab task semantics: `bac831afa62cd1bb89e0d3c7837bf1766b149d5a`.
 - Installed MJLab 1.6.0 APIs and native Go2/Go1 asset conventions.
 
-Runtime code does not import the local reference checkout. The original MIT
-license remains at `src/tasks/supermimic/LICENSE`.
+Runtime code does not import the local reference checkout. The package MIT
+license remains at `src/tasks/supermimic/LICENSE`, with the existing copyright
+notices and the Reproduced notice for reused implementation. Repeated source
+headers are consolidated there; existing attribution wording and years are retained.

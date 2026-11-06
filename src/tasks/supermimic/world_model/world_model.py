@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Reference autoregressive world model with Go2 state and analytic task heads."""
 
 from __future__ import annotations

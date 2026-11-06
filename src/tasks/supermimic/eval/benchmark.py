@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Command-wise tracking and first-episode survival evaluation."""
 
 from __future__ import annotations

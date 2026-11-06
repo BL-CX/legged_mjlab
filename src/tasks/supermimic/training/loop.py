@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """SuperMimic training: collect one environment step, fit dynamics, improve policy."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Analytic observations, commands, rewards, and deterministic task memory."""
 
 import hashlib

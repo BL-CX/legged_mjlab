@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Go2 training defaults composed from the reference learning components."""
 
 from __future__ import annotations

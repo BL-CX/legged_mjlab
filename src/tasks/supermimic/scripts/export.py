@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Export a trained policy: python -m src.tasks.supermimic.scripts.export."""
 
 from pathlib import Path

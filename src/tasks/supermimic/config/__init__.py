@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Checkpoint protocol and configuration snapshots."""
 
 from __future__ import annotations

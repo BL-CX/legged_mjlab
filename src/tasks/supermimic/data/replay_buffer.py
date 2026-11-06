@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """GPU ring replay buffer laid out as [env, time].
 
 Each row holds the state ``s_t`` at the start of a control step together with the

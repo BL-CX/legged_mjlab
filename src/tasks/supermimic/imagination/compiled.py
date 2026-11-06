@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """One compiled imagined step: dynamics, Go2 reward, termination, and clean observation."""
 
 from __future__ import annotations

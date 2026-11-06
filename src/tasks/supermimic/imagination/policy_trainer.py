@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """Short-horizon actor–critic through the frozen world model (paper §3.3, Table A.5)."""
 
 from __future__ import annotations

@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """HIM contact rewards and their soft-contact approximation for imagination."""
 
 import torch

@@ -1,4 +1,3 @@
-# Copyright (c) 2026-2027 zh
 """World-model fitting on k-step replay windows (paper Eq. 1, Table A.5)."""
 
 from __future__ import annotations
