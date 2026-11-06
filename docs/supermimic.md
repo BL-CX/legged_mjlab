@@ -25,7 +25,8 @@ Paths are relative to `src/tasks/supermimic/`.
 | `policy/nets.py` | History MoE, actor and privileged critic |
 | `imagination/` | Differentiable rollout, objective and actor/critic updates |
 | `training/config.py`, `training/schedule.py` | Component composition and learning schedule |
-| `training/loop.py` | Collection, updates, rollback, logging and checkpoints |
+| `training/loop.py` | Collection, updates, rollback and checkpoints |
+| `training/logger.py` | TensorBoard scalars, terminal panels and the readable run log |
 | `eval/`, `scripts/` | Playback, evaluation, deployment export and CLI entry points |
 
 `TrainConfig` combines a native `env`, a `SuperMimicCfg` agent and run settings.
@@ -117,7 +118,10 @@ From the repository root:
 .venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-flat \
   --device cuda:0 --env.scene.num-envs 1024 --run-name flat
 .venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-rough \
-  --device cuda:0 --run-name rough
+  --device cuda:0 --run-name rough --agent.schedule.log-interval 10
+.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-rough \
+  --device cuda:0 --run-name rough \
+  --resume /absolute/path/logs/supermimic/rough/2026-11-06_10-30-00_123456/ckpt_latest.pt
 .venv/bin/python -m src.tasks.supermimic.scripts.play go2-supermimic-rough \
   --checkpoint-file /absolute/path/ckpt_latest.pt --viewer viser
 .venv/bin/python -m src.tasks.supermimic.scripts.export \
@@ -141,6 +145,45 @@ that affect history length or action semantics. Programmatic
 `make_playback(checkpoint_file)` uses the checkpoint's environment unless given an
 explicit `env_cfg`. Export writes TorchScript, ONNX and JSON metadata with both
 actor normalizers and action scales resolved in joint order.
+
+## Logging
+
+Each invocation creates `log_root/run_name/YYYY-MM-DD_HH-MM-SS_microseconds/`,
+including resumed runs. Checkpoints stay in that run directory. TensorBoard
+events are under `tb/`, readable training panels and status messages are in
+`train.log`, and `params/` contains `env.yaml`, `agent.yaml` and run metadata in
+`run.yaml`. Timestamped directories separate new runs without changing the
+checkpoint protocol.
+
+`TrainingLogger` writes scalars every learning iteration. Terminal panels follow
+`agent.schedule.log_interval`, with the first and final iteration always shown;
+the CLI example above prints every ten iterations. The panel separates WM
+warmup, actor ramp, joint training and frozen-actor phases. Policy metrics appear
+after policy updates begin, so warmup does not display a zero imagined objective.
+It reports normalized WM loss, imagined objective J, critic loss, learning rates,
+actual real-step throughput, separate collection and learning times, elapsed time
+and ETA. Collection FPS uses collection time; total FPS includes the complete
+learning iteration. Session timing and ETA restart when resuming.
+
+Episode return and length average the last 100 completed episodes. Length is
+shown in both control steps and seconds. `Reward_Rate/*` contains current weighted
+reward rates before control-period scaling. Native `Episode_Reward/*` contains
+completed weighted reward sums divided by the configured maximum episode duration;
+`Episode_Termination/*` contains native termination counts. Native summaries are
+averaged over the collection steps that report them. They remain separate from
+the current reward rates and from completed episode returns.
+
+The logger writes each metric once under the name supplied by its producer,
+including the existing `wm/*`, `policy/*`, `train/*` and `time/*` names. Derived
+throughput uses `perf/*`. The terminal layout follows
+[MJLab 1.6](https://github.com/mujocolab/mjlab/blob/v1.6.0/src/mjlab/rl/runner.py)
+and [RSL-RL](https://github.com/leggedrobotics/rsl_rl/blob/main/rsl_rl/utils/logger.py)
+independently of TensorBoard tag names. The imagined objective J retains its
+original name and maximization convention.
+
+```bash
+.venv/bin/tensorboard --logdir logs/supermimic
+```
 
 Short deterministic comparisons and CPU smoke runs check behavior preservation;
 they do not establish convergence of the default 40000-iteration run.
