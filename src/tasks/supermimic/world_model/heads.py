@@ -58,11 +58,12 @@ class AnalyticHeads:
         noise = cfg.noise.noise_scales
         self.noise_amplitude = (
             self.default_joint_pos.new_tensor(
-                (noise.base_ang_vel,) * 3
+                (0.0,) * 3
+                + (noise.base_ang_vel,) * 3
                 + (noise.projected_gravity,) * 3
                 + (noise.joint_pos,) * self.spec.act_dim
                 + (noise.joint_vel,) * self.spec.act_dim
-                + (0.0,) * (self.spec.act_dim + 3 + 2)
+                + (0.0,) * (self.spec.act_dim + 2)
             )
             * cfg.noise.noise_level
         )

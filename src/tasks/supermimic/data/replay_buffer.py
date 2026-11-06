@@ -92,7 +92,7 @@ class ReplayBuffer:
         xi_dim,
         device,
         *,
-        history_length=5,
+        history_length=6,
         observation_dim=47,
         archive_size=100000,
         archive_keep_prob=0.02,

@@ -161,7 +161,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "history": ObservationGroupCfg(
             terms={"frame": ObservationTermCfg(func=observation)},
-            history_length=5,
+            history_length=6,
             flatten_history_dim=False,
             enable_corruption=False,
         ),

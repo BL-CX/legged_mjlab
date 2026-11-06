@@ -7,12 +7,12 @@ from ...world_model.state_spec import Context, Memory, Physical, TaskState
 from .gait_rewards import gait_phase
 
 OBS_TERMS = (
+    ("velocity_command", 3),
     ("base_angular_velocity_body", 3),
     ("projected_gravity_body", 3),
     ("joint_position_offset_with_encoder_bias", 12),
     ("joint_velocity", 12),
     ("previous_unscaled_action", 12),
-    ("velocity_command", 3),
     ("gait_phase_sin_cos", 2),
 )
 OBS_DIM = sum(width for _, width in OBS_TERMS)
@@ -65,12 +65,12 @@ def analytic_observation(task, state: TaskState, *, noisy: bool = False) -> Tens
     context = Context.split(state.context)
     observation = torch.cat(
         (
+            state.command,
             physical.angular_body,
             physical.gravity,
             physical.joint_offset + context.encoder_bias,
             physical.joint_velocity,
             memory.previous_action,
-            state.command,
         ),
         -1,
     )

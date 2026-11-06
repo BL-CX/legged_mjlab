@@ -51,7 +51,7 @@ class HistoryEncoder(nn.Module):
 class Policy(nn.Module):
     """Encode frame-major history and concatenate its latent with the current frame."""
 
-    def __init__(self, cfg: PolicyCfg, history_length: int = 5):
+    def __init__(self, cfg: PolicyCfg, history_length: int = 6):
         super().__init__()
         self.cfg = cfg
         self.observation_dim = OBS_DIM
