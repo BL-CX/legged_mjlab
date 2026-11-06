@@ -1,9 +1,5 @@
 """Analytic observations, commands, rewards, and deterministic task memory."""
 
-import hashlib
-import json
-from dataclasses import asdict
-
 import torch
 from torch import Tensor
 
@@ -30,18 +26,27 @@ class AnalyticHeads:
 
     observation_term_dims = tuple(width for _, width in OBS_TERMS)
 
-    def __init__(self, cfg, robot, surface, device="cpu"):
+    def __init__(
+        self,
+        cfg,
+        robot,
+        surface,
+        *,
+        dt: float,
+        reward_scale: float,
+        reward_weights: dict[str, float],
+        device="cpu",
+    ):
         self.cfg = cfg
         self.device = torch.device(device)
-        self.dt = cfg.timestep * cfg.decimation
+        self.dt = dt
+        self.reward_scale = reward_scale
+        self.reward_weights = reward_weights
         self.joint_names = tuple(robot.joint_names)
         self.foot_names = tuple(dict.fromkeys(name.split("_")[0] for name in self.joint_names))
         self.default_joint_pos = robot.data.default_joint_pos[0].clone()
         self.joint_limits = robot.data.soft_joint_pos_limits[0].clone()
         self.spec = StateSpec(surface, self.device)
-        self.hash = _task_semantic_hash(
-            cfg, surface.geometry_hash, self.default_joint_pos, self.joint_limits, self.joint_names
-        )
         self.hip_joint_ids = [index for index, name in enumerate(self.joint_names) if name.endswith("_hip_joint")]
         self.posture_std = torch.tensor(
             [
@@ -85,7 +90,14 @@ class AnalyticHeads:
         command = heading_command(self.cfg.commands, command, yaw, heading, standing)
         return TaskState(physical, memory, command, context)
 
-    def advance(self, state: TaskState, action: Tensor, next_physical: Tensor, *, contact_times=None) -> TaskState:
+    def advance(
+        self,
+        state: TaskState,
+        action: Tensor,
+        next_physical: Tensor,
+        *,
+        contact_times=None,
+    ) -> TaskState:
         """Use real sensor contact timers or probability-weighted imagined durations."""
         before = Memory.split(state.memory)
         clock = before.elapsed_time.squeeze(-1) + self.dt
@@ -123,8 +135,8 @@ class AnalyticHeads:
         return reference_reward_terms(self, state, action, next_state)
 
     def reward(self, state: TaskState, action: Tensor, next_state: TaskState) -> Tensor:
-        return self.dt * sum(
-            getattr(self.cfg.reward.scales, name) * value
+        return self.reward_scale * sum(
+            self.reward_weights.get(name, 0.0) * value
             for name, value in self.reward_terms(state, action, next_state).items()
         )
 
@@ -133,22 +145,3 @@ class AnalyticHeads:
 
     def soft_termination(self, state: TaskState) -> Tensor:
         return soft_termination(state, self.cfg.reward.fall_angle, self.cfg.reward.fall_softness_deg)
-
-
-def _task_semantic_hash(cfg, geometry_hash: str, default_joint_pos: Tensor, joint_limits: Tensor, joint_names) -> str:
-    """Identify task coordinates, native physics, observations, and reward meaning."""
-    from ..config import robot_settings
-
-    task = asdict(cfg)
-    for name in ("num_envs", "seed", "field_cache_dir"):
-        task.pop(name)
-    payload = {
-        "state_layout": "physical125_memory42_command3_context16",
-        "task": task,
-        "robot": robot_settings(cfg),
-        "geometry": geometry_hash,
-        "default_joint_pos": default_joint_pos.cpu().tolist(),
-        "joint_limits": joint_limits.cpu().tolist(),
-        "joint_names": joint_names,
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()

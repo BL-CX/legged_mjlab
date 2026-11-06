@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from copy import deepcopy
@@ -10,11 +9,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 import torch
+from mjlab.envs import ManagerBasedRlEnv
+from mjlab.utils.os import dump_yaml
 from mjlab.utils.torch import configure_torch_backends
 from torch.utils.tensorboard import SummaryWriter
 
-from ..config import FRAMEWORK, robot_settings
-from ..config.go2.env_cfg import make_env
 from ..config.go2.rl_cfg import TrainConfig
 from ..imagination.policy_trainer import PolicyTrainer
 from ..policy.nets import Critic, Policy
@@ -31,8 +30,9 @@ class Trainer:
         self.is_main = self.rank == 0
         if self.world > 1:
             cfg.device = f"cuda:{local_rank}"
-            if cfg.env.terrain == "rough" and cfg.env.terrain_seed is None:
-                cfg.env.terrain_seed = cfg.env.seed
+            generator = cfg.env.scene.terrain.terrain_generator
+            if generator is not None and generator.seed is None:
+                generator.seed = cfg.env.seed
             cfg.wm_trainer.lr *= self.world**0.5
             cfg.policy_trainer.lr *= self.world**0.5
             cfg.policy_trainer.critic_lr *= self.world**0.5
@@ -45,11 +45,14 @@ class Trainer:
         self.writer = None
         self.env = None
         try:
-            self.env = env = make_env(env_cfg, device=str(self.device), record=True)
+            self.env = env = ManagerBasedRlEnv(env_cfg, device=str(self.device))
             self.command = env.command_manager.get_term("velocity")
             self.task = self.command.model
             self.wm = WorldModel(cfg.world_model, self.task, self.device)
-            self.policy = Policy(cfg.policy, history_length=cfg.env.history_length).to(self.device)
+            self.policy = Policy(
+                cfg.policy,
+                history_length=env.cfg.observations["history"].history_length,
+            ).to(self.device)
             self.critic = Critic(cfg.critic).to(self.device)
             for module in (self.wm, self.policy, self.critic):
                 broadcast_params(module)
@@ -66,16 +69,13 @@ class Trainer:
             if self.is_main:
                 self.log_dir.mkdir(parents=True, exist_ok=True)
                 self.writer = SummaryWriter(str(self.log_dir / "tb"))
-                (self.log_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2, default=str) + "\n")
-                snapshot = {
-                    "framework": FRAMEWORK,
-                    "config": asdict(self.command.env_cfg),
-                    "spec_hash": self.task.hash,
-                    "geometry_hash": self.command.surface.geometry_hash,
-                    "robot": robot_settings(self.command.env_cfg),
-                }
-                (self.log_dir / "task_config.json").write_text(json.dumps(snapshot, indent=2) + "\n")
-                print(f"[INFO] Logging experiment in directory: {self.log_dir}", flush=True)
+                configuration = asdict(cfg)
+                dump_yaml(self.log_dir / "params" / "env.yaml", configuration.pop("env"))
+                dump_yaml(self.log_dir / "params" / "agent.yaml", configuration)
+                print(
+                    f"[INFO] Logging experiment in directory: {self.log_dir}",
+                    flush=True,
+                )
         except BaseException:
             self.close()
             raise
@@ -84,7 +84,6 @@ class Trainer:
         if not self.is_main:
             return
         data = {
-            "format": FRAMEWORK,
             "iteration": self.iteration,
             "num_updates": self.num_updates,
             "wm": self.wm.state_dict(),
@@ -93,8 +92,7 @@ class Trainer:
             "wm_opt": self.wm_trainer.opt.state_dict(),
             "policy_opt": self.policy_trainer.opt.state_dict(),
             "critic_opt": self.policy_trainer.critic_opt.state_dict(),
-            "config": asdict(self.cfg),
-            "spec_hash": self.task.hash,
+            "config": self.cfg,
             "curriculum": self.command.curriculum_state_dict(),
         }
         path = self.log_dir / name
@@ -104,14 +102,6 @@ class Trainer:
 
     def load(self, path: Path) -> None:
         checkpoint = torch.load(Path(path).expanduser(), map_location=self.device, weights_only=False)
-        if checkpoint.get("format") != FRAMEWORK:
-            raise ValueError("Checkpoint uses an older training protocol; use its original checkout")
-        saved = TrainConfig.from_dict(checkpoint["config"])
-        for name in ("world_model", "wm_trainer", "policy", "critic", "policy_trainer"):
-            if asdict(getattr(saved, name)) != asdict(getattr(self.cfg, name)):
-                raise ValueError(f"Resume requires unchanged {name} settings")
-        if checkpoint.get("spec_hash") != self.task.hash:
-            raise ValueError("Resume requires unchanged task state, rewards, and native physics")
         self.wm.load_state_dict(checkpoint["wm"])
         self.policy.load_state_dict(checkpoint["policy"])
         self.critic.load_state_dict(checkpoint["critic"])
@@ -146,7 +136,7 @@ class Trainer:
             while self.iteration < sch.total_iterations:
                 t0 = time.perf_counter()
                 action = self.act(history)
-                executed = action + cfg.env.action_noise_std * torch.randn_like(action)
+                executed = action + cfg.action_noise_std * torch.randn_like(action)
                 self.recorder.clean_action = action
                 observations, reward, terminated, truncated, _ = env.step(executed)
                 done = terminated | truncated
@@ -199,16 +189,28 @@ class Trainer:
                         finished_returns = [total / count] if count else []
                     if self.is_main:
                         for key, value in agg.items():
-                            self.writer.add_scalar(key, value / (agg_n if key != "lr" else 1), self.iteration)
+                            self.writer.add_scalar(
+                                key,
+                                value / (agg_n if key != "lr" else 1),
+                                self.iteration,
+                            )
                         if finished_returns:
                             self.writer.add_scalar(
-                                "train/episode_return", sum(finished_returns) / len(finished_returns), self.iteration
+                                "train/episode_return",
+                                sum(finished_returns) / len(finished_returns),
+                                self.iteration,
                             )
                             self.writer.add_scalar(
-                                "train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), self.iteration
+                                "train/episode_len",
+                                sum(finished_lens) / max(len(finished_lens), 1),
+                                self.iteration,
                             )
                         for key, value in timers.items():
-                            self.writer.add_scalar(f"time/{key}_s_per_iter", value / sch.log_interval, self.iteration)
+                            self.writer.add_scalar(
+                                f"time/{key}_s_per_iter",
+                                value / sch.log_interval,
+                                self.iteration,
+                            )
                         for key, value in self.command.last_metrics.items():
                             self.writer.add_scalar(key, value, self.iteration)
                         print(

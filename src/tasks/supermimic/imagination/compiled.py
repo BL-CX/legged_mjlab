@@ -22,7 +22,7 @@ class ImagStep:
         task = self.wm.heads
         d = task.soft_termination(next_state)
         terms = task.reward_terms(state, a, next_state)
-        r = task.dt * sum(getattr(task.cfg.reward.scales, name) * value for name, value in terms.items())
+        r = task.reward_scale * sum(task.reward_weights.get(name, 0.0) * value for name, value in terms.items())
         obs_clean = task.observe(next_state, noisy=False)
         return s_next, r, terms, d, obs_clean
 

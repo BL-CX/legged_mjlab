@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+import math
+from dataclasses import dataclass, field
 
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
@@ -15,9 +15,6 @@ from ..state_io import StateIO
 from .curriculums import TerrainCurriculum
 from .observations import OBS_DIM
 from .terrains import PlaneSurface, TerrainMap, TerrainSurface
-
-if TYPE_CHECKING:
-    from ...config.go2.env_cfg import EnvCfg
 
 
 def sample_commands(cfg, yaw):
@@ -65,10 +62,84 @@ def advance_commands(cfg, state, physical, dt):
     return command, timer, heading, standing, forward
 
 
+@dataclass
+class NoiseScales:
+    """Uniform-noise half amplitudes in each observation term's units."""
+
+    base_ang_vel: float = 0.2  # rad/s.
+    projected_gravity: float = 0.05
+    joint_pos: float = 0.01  # rad.
+    joint_vel: float = 1.5  # rad/s.
+
+
+@dataclass
+class NoiseCfg:
+    """Apply noise to each new proprioceptive frame once."""
+
+    add_noise: bool = True
+    noise_level: float = 1.0
+    noise_scales: NoiseScales = field(default_factory=NoiseScales)
+
+
+@dataclass
+class CommandsCfg:
+    """HIM sampling and heading feedback with body translation and world yaw tracking."""
+
+    initial_ranges: tuple[tuple[float, float], tuple[float, float], tuple[float, float]] = (
+        (-1.0, 1.0),
+        (-1.0, 1.0),
+        (-2.0, 2.0),
+    )
+    resampling_time: tuple[float, float] = (4.0, 12.0)
+    heading_range: tuple[float, float] = (-3.14, 3.14)
+    heading_control_stiffness: float = 0.5
+    rel_standing_envs: float = 0.1
+    rel_forward_envs: float = 0.05
+
+
+@dataclass
+class GaitCfg:
+    """Foot-name gait phases with soft contacts used only in imagination."""
+
+    period: float = 0.6
+    offsets: dict[str, float] = field(default_factory=lambda: {"FR": 0.0, "FL": 0.5, "RR": 0.5, "RL": 0.0})
+    stance_fraction: float = 0.56
+    command_threshold: float = 0.1
+
+
+@dataclass
+class PostureCfg:
+    walking_threshold: float = 0.1
+    running_threshold: float = 1.5
+    std_standing: dict[str, float] = field(default_factory=lambda: {"hip": 0.05, "thigh": 0.1, "calf": 0.15})
+    std_walking: dict[str, float] = field(default_factory=lambda: {"hip": 0.15, "thigh": 0.35, "calf": 0.5})
+    std_running: dict[str, float] = field(default_factory=lambda: {"hip": 0.15, "thigh": 0.35, "calf": 0.5})
+
+
+@dataclass
+class RewardCfg:
+    """Body-frame translation and HIM reward rates."""
+
+    tracking_linear_variance: float = 0.25
+    tracking_angular_variance: float = 0.25
+    fall_angle: float = math.radians(70)
+    fall_softness_deg: float = 5.0
+    stand_still_command_threshold: float = 0.1
+    foot_slip_command_threshold: float = 0.1
+    stumble_ratio: float = 5.0
+    leg_collision_force_threshold: float = 1.0
+    hip_pos_command_threshold: float = 0.1
+    soft_landing_command_threshold: float = 0.1
+    gait: GaitCfg = field(default_factory=GaitCfg)
+    posture: PostureCfg = field(default_factory=PostureCfg)
+
+
 @dataclass(kw_only=True)
 class VelocityCommandCfg(CommandTermCfg):
-    env_cfg: EnvCfg
-    terrain_map: TerrainMap
+    noise: NoiseCfg = field(default_factory=NoiseCfg)
+    commands: CommandsCfg = field(default_factory=CommandsCfg)
+    reward: RewardCfg = field(default_factory=RewardCfg)
+    terrain_curriculum: bool = True
     play: bool = False
     no_terminations: bool = False
     resampling_time_range: tuple[float, float] = (0.0, 0.0)
@@ -84,9 +155,8 @@ class VelocityCommand(CommandTerm):
         from ...world_model.heads import AnalyticHeads
 
         super().__init__(cfg, env)
-        self.env_cfg = cfg.env_cfg
         self.robot = env.scene["robot"]
-        self.map = cfg.terrain_map
+        self.map = TerrainMap(env.cfg.scene.terrain)
         terrain = env.scene.terrain
         self.map.bind(terrain.terrain_origins)
         self.surface = (
@@ -94,7 +164,15 @@ class VelocityCommand(CommandTerm):
             if self.map.plane
             else TerrainSurface.from_model(env.sim.mj_model, self.device, terrain_map=self.map)
         )
-        self.model = AnalyticHeads(self.env_cfg, self.robot, self.surface, device=self.device)
+        self.model = AnalyticHeads(
+            cfg,
+            self.robot,
+            self.surface,
+            dt=env.step_dt,
+            reward_scale=env.step_dt if env.cfg.scale_rewards_by_dt else 1.0,
+            reward_weights={name: term.weight for name, term in env.cfg.rewards.items()},
+            device=self.device,
+        )
         self.state_io = StateIO(env, self.model.spec.surface_height)
         self.sim_context = SimContext(env)
         spec = self.model.spec
@@ -121,7 +199,7 @@ class VelocityCommand(CommandTerm):
         self.terrain_curriculum = TerrainCurriculum(
             self.map,
             self.num_envs,
-            enabled=self.env_cfg.terrain_curriculum,
+            enabled=self.cfg.terrain_curriculum,
             device=self.device,
         )
         if not self.map.plane:
@@ -226,9 +304,9 @@ class VelocityCommand(CommandTerm):
         self.last_metrics = {}
         for name, value in self.reward_terms.items():
             mean = value.mean()
-            weight = getattr(self.env_cfg.reward.scales, name)
+            weight = self.model.reward_weights.get(name, 0.0)
             self.last_metrics[f"task/reward_raw/{name}"] = mean
-            self.last_metrics[f"task/reward/{name}"] = env.step_dt * weight * mean
+            self.last_metrics[f"task/reward/{name}"] = self.model.reward_scale * weight * mean
             self.last_metrics[f"Reward_Rate/{name}"] = weight * mean
         self.last_metrics.update(
             {
@@ -243,7 +321,10 @@ class VelocityCommand(CommandTerm):
         return terminated
 
     def curriculum_state_dict(self):
-        return {"command": {"control_steps": self.command_steps}, "terrain": self.terrain_curriculum.state_dict()}
+        return {
+            "command": {"control_steps": self.command_steps},
+            "terrain": self.terrain_curriculum.state_dict(),
+        }
 
     def load_curriculum_state_dict(self, state):
         self.command_steps = state["command"]["control_steps"]
@@ -254,8 +335,12 @@ class VelocityCommand(CommandTerm):
         del name, get_env_idx, on_change, request_action
         with server.gui.add_folder("Velocity control"):
             self._enabled = server.gui.add_checkbox("Manual commands (all environments)", initial_value=False)
-            axes = ("Forward velocity vx (m/s)", "Lateral velocity vy (m/s)", "Yaw rate wz (rad/s)")
-            for label, bounds in zip(axes, self.env_cfg.commands.initial_ranges, strict=True):
+            axes = (
+                "Forward velocity vx (m/s)",
+                "Lateral velocity vy (m/s)",
+                "Yaw rate wz (rad/s)",
+            )
+            for label, bounds in zip(axes, self.cfg.commands.initial_ranges, strict=True):
                 limit = max(abs(bounds[0]), abs(bounds[1]))
                 maximum = server.gui.add_slider(f"Range: {label}", min=0.1, max=10.0, step=0.1, initial_value=limit)
                 slider = server.gui.add_slider(label, min=-limit, max=limit, step=0.05, initial_value=0.0)

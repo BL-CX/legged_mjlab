@@ -6,10 +6,10 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
+from mjlab.envs import ManagerBasedRlEnv
 from mjlab.utils.wrappers import VideoRecorder
 
-from ..config.go2.env_cfg import EnvCfg, make_env
-from ..world_model.heads import AnalyticHeads
+from ..config.go2.env_cfg import flat_env_cfg, rough_env_cfg
 from .export import checkpoint_actor, load_policy_checkpoint
 
 
@@ -21,7 +21,11 @@ def _restore_curriculum(command, checkpoint):
     command.load_curriculum_state_dict(
         {
             "command": saved["command"],
-            "terrain": {**terrain, "family_ids": families[rows], "levels": levels[rows]},
+            "terrain": {
+                **terrain,
+                "family_ids": families[rows],
+                "levels": levels[rows],
+            },
         }
     )
 
@@ -40,35 +44,34 @@ def make_playback(
     no_terminations=False,
 ):
     """Construct native playback with checkpoint semantics and optional video."""
-    source = load_policy_checkpoint(checkpoint_file) if agent == "trained" else None
-    cfg = deepcopy(source[0]) if source is not None else EnvCfg()
-    if terrain is not None:
-        if source is not None and terrain != cfg.terrain:
+    checkpoint = load_policy_checkpoint(checkpoint_file) if agent == "trained" else None
+    if checkpoint is not None:
+        cfg = deepcopy(checkpoint["config"].env)
+        saved_terrain = "flat" if cfg.scene.terrain.terrain_type == "plane" else "rough"
+        if terrain is not None and terrain != saved_terrain:
             raise ValueError("Playback terrain differs from the saved configuration")
-        cfg.terrain = terrain
-    cfg.num_envs = num_envs
+    else:
+        cfg = rough_env_cfg(play=True) if terrain == "rough" else flat_env_cfg(play=True)
+    cfg.scene.num_envs = num_envs
+    cfg.recorders.clear()
+    cfg.terminations.pop("time_out", None)
+    task_cfg = cfg.commands["velocity"]
+    task_cfg.play = True
+    task_cfg.terrain_curriculum = False
+    task_cfg.no_terminations = no_terminations
+    task_cfg.noise.add_noise = False
+    if video_height is not None:
+        cfg.viewer.height = video_height
+    if video_width is not None:
+        cfg.viewer.width = video_width
     path = Path(checkpoint_file).expanduser().resolve() if checkpoint_file is not None else None
     record_video = path is not None and video
     torch.manual_seed(cfg.seed)
-    env = make_env(
-        cfg,
-        device=device,
-        play=True,
-        render_mode="rgb_array" if record_video else None,
-        video_height=video_height,
-        video_width=video_width,
-        no_terminations=no_terminations,
-    )
+    env = ManagerBasedRlEnv(cfg, device=device, render_mode="rgb_array" if record_video else None)
     try:
         command = env.command_manager.get_term("velocity")
         model = None
-        if source is not None:
-            saved_cfg, snapshot, checkpoint = source
-            if snapshot["geometry_hash"] != command.surface.geometry_hash:
-                raise ValueError("Playback terrain geometry differs from the saved task")
-            original = AnalyticHeads(saved_cfg, env.scene["robot"], command.surface, device=env.device)
-            if checkpoint["spec_hash"] != original.hash:
-                raise ValueError("Checkpoint task spec does not match the saved configuration and current robot")
+        if checkpoint is not None:
             model = checkpoint_actor(checkpoint).to(env.device)
             _restore_curriculum(command, checkpoint)
         env.reset()

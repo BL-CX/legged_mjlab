@@ -15,18 +15,23 @@ import torch
 from mjlab.terrains import TerrainEntityCfg, TerrainGeneratorCfg
 
 
-def reference_generator(cfg) -> TerrainGeneratorCfg:
+def reference_generator() -> TerrainGeneratorCfg:
     """Reproduce the ri_5036_him generator from legged_wbc_mjlab@4eb8fcf."""
     from mjlab.terrains import BoxRandomGridTerrainCfg
     from mjlab.terrains.config import ROUGH_TERRAINS_CFG
 
     terrain = deepcopy(ROUGH_TERRAINS_CFG)
-    terrain.seed = cfg.terrain_seed
-    terrain.size = tuple(cfg.patch_size_m)
-    terrain.num_rows, terrain.num_cols = cfg.core_rows, cfg.num_cols
-    terrain.border_width = cfg.outer_flat_width_m
+    terrain.seed = None
+    terrain.size = (8.0, 8.0)
+    terrain.num_rows, terrain.num_cols = 6, 20
+    terrain.border_width = 20.0
     terrain.curriculum = True
-    for name in ("hf_pyramid_slope", "hf_pyramid_slope_inv", "wave_terrain", "random_rough"):
+    for name in (
+        "hf_pyramid_slope",
+        "hf_pyramid_slope_inv",
+        "wave_terrain",
+        "random_rough",
+    ):
         terrain.sub_terrains.pop(name)
     terrain.sub_terrains["box_random_grid"] = BoxRandomGridTerrainCfg(
         proportion=0.05,
@@ -110,27 +115,18 @@ def clean_look(terrain):
 class TerrainMap:
     """Map ten HIM terrain families to columns and six increasing difficulty rows."""
 
-    def __init__(self, cfg):
-        self.cfg = deepcopy(cfg)
-        self.plane = cfg.terrain == "flat"
-        self.size = tuple(cfg.patch_size_m)
-        self.generator = None if self.plane else reference_generator(cfg)
+    def __init__(self, cfg: TerrainEntityCfg):
+        self.plane = cfg.terrain_type == "plane"
+        self.generator = cfg.terrain_generator
+        self.size = (8.0, 8.0) if self.plane else tuple(self.generator.size)
         self.family_names = ("flat",) if self.plane else tuple(self.generator.sub_terrains)
         weights = (1.0,) if self.plane else tuple(term.proportion for term in self.generator.sub_terrains.values())
         total_weight = sum(weights)
         self.proportions = tuple(weight / total_weight for weight in weights)
         self.rows, self.cols = (1, 1) if self.plane else (self.generator.num_rows, len(self.family_names))
-        self.support_half_extent = np.asarray((self.rows, self.cols)) * self.size / 2 + cfg.outer_flat_width_m
+        border = 20.0 if self.plane else self.generator.border_width
+        self.support_half_extent = np.asarray((self.rows, self.cols)) * self.size / 2 + border
         self.origins = None
-
-    def entity_cfg(self):
-        if self.plane:
-            return clean_look(TerrainEntityCfg(terrain_type="plane"))
-        return clean_look(
-            TerrainEntityCfg(
-                terrain_type="generator", terrain_generator=deepcopy(self.generator), max_init_terrain_level=None
-            )
-        )
 
     def bind(self, origins):
         if self.plane:
@@ -158,7 +154,16 @@ class TerrainGeometry:
     """Bucket static collision surfaces by tile for Torch-only runtime queries."""
 
     @classmethod
-    def from_model(cls, model, device="cpu", *, terrain_map):
+    def from_model(
+        cls,
+        model,
+        device="cpu",
+        *,
+        terrain_map,
+        resolution: float = 0.02,
+        half_extent: float = 6.5,
+        cache_dir: str = "logs/heightfields",
+    ):
         self = cls()
         self.device = torch.device(device)
         self.rows, self.cols = terrain_map.rows, terrain_map.cols
@@ -198,7 +203,10 @@ class TerrainGeometry:
             digest.update(position.tobytes())
             digest.update(dimensions.tobytes())
             if kind == mujoco.mjtGeom.mjGEOM_BOX:
-                lower, upper = position[:2] - dimensions[:2], position[:2] + dimensions[:2]
+                lower, upper = (
+                    position[:2] - dimensions[:2],
+                    position[:2] + dimensions[:2],
+                )
                 first = np.floor((lower + half + 1e-8) / terrain_map.size).astype(int)
                 last = np.floor((upper + half - 1e-8) / terrain_map.size).astype(int)
                 value = (*position[:2], *dimensions[:2], position[2] + dimensions[2])
@@ -209,7 +217,10 @@ class TerrainGeometry:
                     boxes[-1].append(value)
             elif kind == mujoco.mjtGeom.mjGEOM_HFIELD:
                 field_id = model.geom_dataid[geom]
-                nrow, ncol = int(model.hfield_nrow[field_id]), int(model.hfield_ncol[field_id])
+                nrow, ncol = (
+                    int(model.hfield_nrow[field_id]),
+                    int(model.hfield_ncol[field_id]),
+                )
                 address = model.hfield_adr[field_id]
                 heights = model.hfield_data[address : address + nrow * ncol].copy()
                 field_size = model.hfield_size[field_id].copy()
@@ -290,10 +301,18 @@ class TerrainGeometry:
         fx, fy = (coordinate - index).unbind(-1)
         c, r = index.unbind(-1)
         width = sizes[1]
-        z00, z01 = self.field_values[bucket, r * width + c], self.field_values[bucket, r * width + c + 1]
-        z10, z11 = self.field_values[bucket, (r + 1) * width + c], self.field_values[bucket, (r + 1) * width + c + 1]
+        z00, z01 = (
+            self.field_values[bucket, r * width + c],
+            self.field_values[bucket, r * width + c + 1],
+        )
+        z10, z11 = (
+            self.field_values[bucket, (r + 1) * width + c],
+            self.field_values[bucket, (r + 1) * width + c + 1],
+        )
         value = torch.where(
-            fx >= fy, z00 + fx * (z01 - z00) + fy * (z11 - z01), z00 + fx * (z11 - z10) + fy * (z10 - z00)
+            fx >= fy,
+            z00 + fx * (z01 - z00) + fy * (z11 - z01),
+            z00 + fx * (z11 - z10) + fy * (z10 - z00),
         )
         return info[4] + info[5] * value
 
@@ -302,22 +321,36 @@ class TerrainSurface:
     """Reference 0.02 m raster with bilinear interpolation and boundary clamping."""
 
     @classmethod
-    def from_model(cls, model, device="cpu", *, terrain_map):
+    def from_model(
+        cls,
+        model,
+        device="cpu",
+        *,
+        terrain_map,
+        resolution: float = 0.02,
+        half_extent: float = 6.5,
+        cache_dir: str = "logs/heightfields",
+    ):
         if terrain_map.plane:
             return PlaneSurface(device)
         self = cls()
         self.device = torch.device(device)
-        cfg = terrain_map.cfg
         origins = terrain_map.origins.reshape(-1, 3).cpu().numpy()
-        self.origin = (float(origins[:, 0].min() - cfg.field_half_m), float(origins[:, 1].min() - cfg.field_half_m))
-        upper = (float(origins[:, 0].max() + cfg.field_half_m), float(origins[:, 1].max() + cfg.field_half_m))
-        self.res = cfg.field_resolution_m
+        self.origin = (
+            float(origins[:, 0].min() - half_extent),
+            float(origins[:, 1].min() - half_extent),
+        )
+        upper = (
+            float(origins[:, 0].max() + half_extent),
+            float(origins[:, 1].max() + half_extent),
+        )
+        self.res = resolution
         geometry = TerrainGeometry.from_model(model, terrain_map=terrain_map)
         payload = f"reference_heightfield_v1/{geometry.geometry_hash}/{self.origin}/{upper}/{self.res}"
         self.geometry_hash = hashlib.sha256(payload.encode()).hexdigest()
         from pathlib import Path
 
-        path = Path(cfg.field_cache_dir) / f"heightfield_blind_{self.geometry_hash[:12]}.pt"
+        path = Path(cache_dir) / f"heightfield_blind_{self.geometry_hash[:12]}.pt"
         if path.exists():
             self.h = torch.load(path, map_location=self.device, weights_only=True)["h"]
             return self

@@ -5,16 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mjlab.envs import ManagerBasedRlEnvCfg
+
 from ...imagination.policy_trainer import PolicyTrainerCfg
 from ...policy.nets import CriticCfg, PolicyCfg
 from ...world_model.wm_trainer import WMTrainerCfg
 from ...world_model.world_model import WorldModelCfg
-from .env_cfg import EnvCfg
+from .env_cfg import flat_env_cfg
 
 
 @dataclass
 class ScheduleCfg:
-    total_iterations: int = 320_000
+    total_iterations: int = 20_000
     updates_per_env_step: float = 0.4
     policy_updates_per_wm_update: int = 1
     warmup_iterations: int = 40
@@ -30,7 +32,8 @@ class TrainConfig:
     run_name: str = "go2_velocity"
     log_root: Path = Path("logs/supermimic")
     device: str = "cuda:0"
-    env: EnvCfg = field(default_factory=EnvCfg)
+    env: ManagerBasedRlEnvCfg = field(default_factory=flat_env_cfg)
+    action_noise_std: float = 0.1
     world_model: WorldModelCfg = field(default_factory=WorldModelCfg)
     wm_trainer: WMTrainerCfg = field(default_factory=WMTrainerCfg)
     policy: PolicyCfg = field(default_factory=PolicyCfg)
@@ -38,11 +41,3 @@ class TrainConfig:
     policy_trainer: PolicyTrainerCfg = field(default_factory=PolicyTrainerCfg)
     schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
     resume: Path | None = None
-
-    @classmethod
-    def from_dict(cls, values: dict) -> TrainConfig:
-        from .. import _update_config
-
-        cfg = cls()
-        _update_config(cfg, values)
-        return cfg

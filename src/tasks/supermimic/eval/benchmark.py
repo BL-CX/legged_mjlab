@@ -12,16 +12,26 @@ from .playback import make_playback
 
 
 @torch.no_grad()
-def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", num_envs=32, seconds=20.0) -> dict:
+def evaluate_policy(
+    checkpoint: str | Path,
+    *,
+    zero_action=False,
+    device="cpu",
+    num_envs=32,
+    seconds=20.0,
+) -> dict:
     """Evaluate four command groups with shared checkpoint settings and initial seeds."""
     checkpoint = Path(checkpoint).expanduser().resolve()
     env, actor = make_playback(checkpoint, num_envs=num_envs, device=device)
     try:
         command = env.command_manager.get_term("velocity")
         task = command.model
-        cfg = command.env_cfg
+        cfg = env.cfg
         device = env.device
-        commands = torch.tensor(((0.5, 0.0, 0.0), (-0.5, 0.0, 0.0), (0.0, 0.5, 0.0), (0.0, 0.0, 0.5)), device=device)
+        commands = torch.tensor(
+            ((0.5, 0.0, 0.0), (-0.5, 0.0, 0.0), (0.0, 0.5, 0.0), (0.0, 0.0, 0.5)),
+            device=device,
+        )
         command_names = ("forward", "backward", "lateral", "yaw")
         groups = torch.arange(num_envs, device=device) % 4
         fixed_commands = commands[groups]
@@ -85,7 +95,7 @@ def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", 
 
         result = {
             "checkpoint": str(checkpoint),
-            "terrain": cfg.terrain,
+            "terrain": "flat" if command.map.plane else "rough",
             "device": str(device),
             "seed": cfg.seed,
             "control_steps": count,
@@ -95,7 +105,10 @@ def evaluate_policy(checkpoint: str | Path, *, zero_action=False, device="cpu", 
             "zero_action": zero_action,
             **summarize(torch.ones(num_envs, device=device, dtype=torch.bool)),
             "per_command": {
-                name: {"command": commands[index].tolist(), **summarize(groups == index)}
+                name: {
+                    "command": commands[index].tolist(),
+                    **summarize(groups == index),
+                }
                 for index, name in enumerate(command_names)
             },
             "falls_per_environment_minute": int(failure_counts.sum()) / (num_envs * count * env.step_dt / 60),
