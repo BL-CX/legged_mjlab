@@ -11,13 +11,12 @@ Paths below are relative to `src/tasks/supermimic/`.
 
 | Module | Responsibility |
 | --- | --- |
-| `config/go2/env_cfg.py` | Go2 environment settings, native managers and environment construction |
+| `config/go2/env_cfg.py` | Native flat/rough Go2 environment presets and manager configuration |
 | `config/go2/rl_cfg.py` | Go2 training defaults and the composed `TrainConfig` tree |
-| `config/__init__.py` | Configuration snapshots and checkpoint protocol |
 | `envs/state_io.py`, `envs/sim_context.py` | Simulator features and randomized context |
 | `envs/mdp/` | Velocity commands, observations, rewards, termination, terrain and progression |
 | `world_model/state_spec.py` | Go2 coordinates, tensor packing, canonical inputs, integration and error coordinates |
-| `world_model/heads.py` | Analytic task advancement, observations, rewards and task identity |
+| `world_model/heads.py` | Analytic task advancement, observations and rewards |
 | `world_model/dynamics.py` | Reference `MLP` and zero-output-initialized `DynamicsMLP` |
 | `world_model/world_model.py` | Prediction, compiled loss step, autoregressive Eq.1 loss and diagnostics |
 | `world_model/wm_trainer.py` | `WMTrainerCfg`, uniform replay sampling and Adam updates |
@@ -46,12 +45,13 @@ Robot collisions use `contype=1`, `conaffinity=0` and foot friction 0.6 before t
 startup randomization. MJLab 1.6 loads meshes directly through `MjSpec.from_file()`.
 
 The velocity task defines `JointPositionActionCfg(scale=0.25)` directly in its
-environment configuration. Snapshots and export metadata read that actual action
-configuration. Camera, simulation and event values are also configured there.
+environment configuration. Deployment export reads that actual action term.
+Camera, simulation and event values are also configured there.
 
-`make_env` returns `ManagerBasedRlEnv` directly. Native command, observation,
-reward, termination, event and recorder managers own the task lifecycle. The
-velocity command keeps deterministic task memory; the observation manager owns
+`flat_env_cfg()` and `rough_env_cfg()` return `ManagerBasedRlEnvCfg` directly;
+training constructs `ManagerBasedRlEnv` with the selected preset. Native command,
+observation, reward, termination, event and recorder managers own the task lifecycle.
+The velocity command keeps deterministic task memory; the observation manager owns
 frame history and partial-reset backfill. Terminal features are refreshed before
 scoring and captured by recorder hooks before automatic resets. Playback uses the
 same environment and native viewer controls.
@@ -66,11 +66,17 @@ model: friction, encoder bias and COM offset. Terrain origins and standing
 probability are no longer copied into context, and command ranges come directly
 from environment settings. Observation and critic widths remain 47 and 262.
 
-Configuration follows one path: `TrainConfig.env` is passed to native construction,
-the velocity command and analytic task heads. History length is configured once as
-`env.history_length`; the policy receives it at construction, and policy training
-uses that same length. Action scale comes directly from the environment action term.
-The MoE experts, gates, history encoding and actor computations remain unchanged.
+Configuration follows one path: `TrainConfig.env` is the native environment
+configuration passed to `ManagerBasedRlEnv`. Scene counts, simulation settings,
+actions, rewards and recorder settings use their corresponding manager fields.
+Command sampling, task noise and reward-shape parameters belong to
+`env.commands["velocity"]`, a `VelocityCommandCfg`; reward weights belong to
+`env.rewards`. The policy and recorder read history length from
+`env.observations["history"].history_length`. Replay capacity is configured as
+`env.recorders["replay"].params["capacity"]`, and training exploration noise as
+`TrainConfig.action_noise_std`. Action scale comes directly from
+`env.actions["joint_pos"].scale`. The MoE experts, gates, history encoding and actor
+computations remain unchanged.
 
 ## Reference training protocol
 
@@ -116,19 +122,24 @@ records the clean policy action.
 Run from the repository root:
 
 ```bash
-.venv/bin/python -m src.tasks.supermimic.scripts.train --help
-.venv/bin/python -m src.tasks.supermimic.scripts.train \
-  --device cuda:0 --run-name flat
-.venv/bin/python -m src.tasks.supermimic.scripts.train \
-  --device cuda:0 --run-name rough --env.terrain rough
-.venv/bin/python -m src.tasks.supermimic.scripts.train \
+.venv/bin/python src/tasks/supermimic/scripts/train.py --help
+.venv/bin/python src/tasks/supermimic/scripts/train.py flat \
+  --device cuda:0 --run-name flat --env.scene.num-envs 1024
+.venv/bin/python src/tasks/supermimic/scripts/train.py rough \
+  --device cuda:0 --run-name rough
+.venv/bin/python src/tasks/supermimic/scripts/train.py flat \
   --resume /absolute/path/ckpt_latest.pt --schedule.total-iterations 400000
 ```
 
-Resume requires matching task, model and optimizer settings. Supply the same
-nondefault component options used by the saved run. Counters and optimizer states
-are restored; replay and warmup refill as in Reproduced. A run writes `config.json`,
-`task_config.json`, `tb/`, numbered `ckpt_N.pt` and `ckpt_latest.pt`.
+The same presets are available through `python -m src.tasks.supermimic.scripts.train`.
+Supply the same preset and nondefault component options when resuming a run.
+Counters, optimizer states and curricula are restored; replay and warmup refill
+as in Reproduced. A run writes `params/env.yaml`, `params/agent.yaml`, `tb/`,
+numbered `ckpt_N.pt` and `ckpt_latest.pt`.
+
+Each checkpoint bundles its `TrainConfig`, including the actual native environment
+configuration, alongside model and optimizer states. Playback and export require
+only the checkpoint; there is no adjacent task snapshot or robot-settings copy.
 
 CPU smoke runs should use small networks, environment counts and batches, with
 `--wm-trainer.compile None --policy-trainer.compile None`. Default network sizes
@@ -151,40 +162,38 @@ input is `[B,235]`, in frame-major oldest-first order, and output is `[B,12]`.
 Playback routes partial resets through task memory and history. Rough playback
 samples terrain rows on reset; saved command progress remains frozen.
 
-## Version and validation
+## Validation
 
-Snapshots use `supermimic_velocity_v3` because configuration paths and stored replay
-context changed. Earlier checkpoints use their original checkout. This revision
-preserves the preceding model inputs, state/reward mathematics, learning losses,
-MoE computations and optimizer updates; it changes their representation and
-configuration flow. Deployment policy inputs and outputs remain unchanged.
+The native configuration refactor changes how task settings are constructed and
+stored. Earlier checkpoints that store dictionary configurations use their original
+checkout. Deployment policy inputs and outputs remain unchanged.
 
-Temporary validation scripts live outside the repository. They compare native
-robot presets, state packing, integration, analytic observations, commands, rewards
-and gradients against the preceding implementation. Real CPU trajectories cover
-flat/rough terrain, startup randomization, timeouts, partial resets and observation
-noise. States, contact timers, commands, rewards, masks and RNG match exactly for the
-representation refactor. Replay checks cover terminal rows, ring wrap, sampled histories and
-manual-reset episode boundaries.
+Validation of the preceding tensor-view refactor used temporary scripts outside
+the repository. These compared native robot presets, state packing, integration,
+analytic observations, commands, rewards and gradients against its preceding
+implementation. Real CPU trajectories covered flat/rough terrain, startup
+randomization, timeouts, partial resets and observation noise. States, contact
+timers, commands, rewards, masks and RNG matched exactly with physics held fixed.
+Replay checks covered terminal rows, ring wrap, sampled histories and manual-reset
+episode boundaries. After 24 real steps and six updates, WM, MoE and critic weights
+matched exactly, with Adam moment differences within float32 accumulation rounding.
+The requested robot/control changes were then checked with fresh runs.
 
-The tensor-view/configuration refactor is compared before the requested robot
-parameter update. With fixed physics, flat/rough trajectories and replay match
-exactly; after 24 real steps and six updates, WM, MoE and critic weights match
-exactly. Tiny Adam moment differences are within float32 accumulation rounding.
-The requested robot/control changes are then checked with fresh runs.
-
-CPU smoke runs cover training, checkpoint continuation, playback, velocity
+Those CPU smoke runs covered training, checkpoint continuation, playback, velocity
 evaluation and TorchScript/ONNX export. Multi-GPU execution and long-run convergence
 have not been measured. Existing `tests/` files are excluded from this reconstruction
 and its replanned commits.
 
-## Sources and license
+The native configuration refactor also matches the preceding implementation exactly
+for all 1,846 compared tensors on each terrain. A 24-step CPU run with six learning
+updates reproduces WM, MoE and critic weights bit for bit. Native configuration
+roundtrips, checkpoint continuation, playback, evaluation, dynamic-batch export
+and compiled imagination/WM gradients pass with the new configuration path.
+
+## Sources
 
 - SuperMimic-Reproduced: `ba6105349069bf040f1fdad60873d13138d505a2`.
 - quadruped_lab task semantics: `bac831afa62cd1bb89e0d3c7837bf1766b149d5a`.
 - Installed MJLab 1.6.0 APIs and native Go2/Go1 asset conventions.
 
-Runtime code does not import the local reference checkout. The package MIT
-license remains at `src/tasks/supermimic/LICENSE`, with the existing copyright
-notices and the Reproduced notice for reused implementation. Repeated source
-headers are consolidated there; existing attribution wording and years are retained.
+Runtime code does not import the local reference checkout.
