@@ -30,7 +30,7 @@ GO2_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
     target_names_expr=(".*hip_.*",),
     stiffness=20.0,
     damping=1.0,
-    effort_limit=23.5,
+    effort_limit=23.7,
     armature=0.01,
     delay_min_lag=0,
     delay_max_lag=4,
@@ -41,7 +41,7 @@ GO2_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
     target_names_expr=(".*thigh_.*",),
     stiffness=20.0,
     damping=1.0,
-    effort_limit=23.5,
+    effort_limit=23.7,
     armature=0.01,
     delay_min_lag=0,
     delay_max_lag=4,
@@ -52,8 +52,8 @@ GO2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
     target_names_expr=(".*calf_.*",),
     stiffness=40.0,
     damping=2.0,
-    effort_limit=45,
-    armature=0.02,
+    effort_limit=45.43,
+    armature=0.01,
     delay_min_lag=0,
     delay_max_lag=4,
     delay_hold_prob=0.5,
@@ -66,12 +66,12 @@ GO2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
 
 
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.32),
+    pos=(0.0, 0.0, 0.29),
     joint_pos={
         ".*thigh_joint": 0.9,
         ".*calf_joint": -1.8,
-        ".*R_hip_joint": 0.1,
-        ".*L_hip_joint": -0.1,
+        ".*R_hip_joint": -0.1,
+        ".*L_hip_joint": 0.1,
     },
     joint_vel={".*": 0.0},
 )
@@ -81,29 +81,17 @@ INIT_STATE = EntityCfg.InitialStateCfg(
 ##
 
 _foot_regex = "^[FR][LR]_foot_collision$"
+_collision_regex = r".*_collision\d*"
 
-# This disables all collisions except the feet.
-# Furthermore, feet self collisions are disabled.
-FEET_ONLY_COLLISION = CollisionCfg(
-    geom_names_expr=(_foot_regex,),
-    contype=0,
-    conaffinity=1,
-    condim=3,
-    priority=1,
-    friction=(0.6,),
-    solimp=(0.9, 0.95, 0.023),
-)
-
-# This enables all collisions, excluding self collisions.
-# Foot collisions are given custom condim, friction and solimp.
+# Enable ground and self contacts; feet use three-dimensional frictional contact.
 FULL_COLLISION = CollisionCfg(
-    geom_names_expr=(".*_collision",),
-    condim={_foot_regex: 3, ".*_collision": 1},
-    priority={_foot_regex: 1, ".*": 1},
-    friction={_foot_regex: (0.6,)},
-    solimp={_foot_regex: (0.9, 0.95, 0.023)},
+    geom_names_expr=(_collision_regex,),
+    condim={_foot_regex: 3, _collision_regex: 1},
+    priority={_foot_regex: 1, ".*": 0},
+    friction={_foot_regex: (1.0, 5e-3, 5e-4)},
+    solref=(0.01, 1.0),
     contype=1,
-    conaffinity=0,
+    conaffinity=1,
 )
 
 ##

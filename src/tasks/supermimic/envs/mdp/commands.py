@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass, field
 
 import torch
+from mjlab.envs.mdp import time_out
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import wrap_to_pi
 
@@ -295,8 +296,10 @@ class VelocityCommand(CommandTerm):
             self.command_steps += 1
             self.terrain_curriculum.control_steps = env.common_step_counter
         done = terminated.clone()
-        if not self.cfg.play and not self.cfg.no_terminations:
-            done |= env.episode_length_buf >= env.max_episode_length
+        timeout = env.cfg.terminations.get("time_out")
+        if timeout is not None and not self.cfg.no_terminations:
+            # Use this step's episode count before termination-manager buffers refresh.
+            done |= timeout.func(env, **timeout.params)
         # Settle using the executed command before integrating the terminal step.
         self.terrain_curriculum.update(env, done.nonzero().flatten(), before.command)
         self.terrain_curriculum.advance(before.command, self.robot.data.heading_w, env.step_dt)
@@ -384,6 +387,13 @@ def observation(env):
 
 def task_termination(env):
     return env.command_manager.get_term("velocity").prepare_step()
+
+
+def task_time_out(env):
+    """Share timeout semantics with curriculum settlement and termination overrides."""
+    if env.command_manager.get_term("velocity").cfg.no_terminations:
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    return time_out(env)
 
 
 def reward_term(env, name):

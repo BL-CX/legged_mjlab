@@ -16,7 +16,7 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from mjlab.viewer import ViewerConfig
 
-from src.assets.robots.unitree_go2.go2_constants import get_go2_robot_cfg
+from src.assets.robots import get_go2_robot_cfg
 
 from ...data.recorder import ReplayRecorderCfg
 from ...envs.mdp.commands import (
@@ -26,6 +26,7 @@ from ...envs.mdp.commands import (
     reset_origins,
     reward_term,
     task_termination,
+    task_time_out,
 )
 from ...envs.mdp.terrains import clean_look, reference_generator
 
@@ -77,7 +78,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             entity_name="robot",
             actuator_names=(".*",),
             use_default_offset=True,
-            scale=0.25,
+            scale={".*_hip_joint": 0.25, ".*_thigh_joint": 0.5, ".*_calf_joint": 0.5},
         ),
     }
 
@@ -152,7 +153,7 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     events["task_startup"] = EventTermCfg(func=initialize_terrain, mode="startup")
 
     terminations = {"task": TerminationTermCfg(func=task_termination)}
-    terminations["time_out"] = TerminationTermCfg(func=envs_mdp.time_out, time_out=True)
+    terminations["time_out"] = TerminationTermCfg(func=task_time_out, time_out=True)
     observations = {
         "observation": ObservationGroupCfg(
             terms={"frame": ObservationTermCfg(func=observation)},
