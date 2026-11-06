@@ -1,11 +1,16 @@
 """Train SuperMimic.  Example:
 
-.venv/bin/python -m src.tasks.supermimic.scripts.train --env.num-envs 1024
+.venv/bin/python src/tasks/supermimic/scripts/train.py flat --env.scene.num-envs 1024
 """
 
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 
 # Under torchrun, pin each rank to its own GPU *before* CUDA/warp initialise: MuJoCo Warp and
@@ -42,12 +47,28 @@ if (
 
 
 def main() -> None:
+    import mjlab
     import tyro
 
-    from ..config.go2.rl_cfg import TrainConfig
-    from ..training.loop import Trainer
+    from src.tasks.supermimic.config.go2.env_cfg import flat_env_cfg, rough_env_cfg
+    from src.tasks.supermimic.config.go2.rl_cfg import TrainConfig
 
-    cfg = tyro.cli(TrainConfig)
+    cfg = tyro.extras.overridable_config_cli(
+        {
+            "flat": (
+                "Train Go2 velocity control on flat terrain.",
+                TrainConfig(env=flat_env_cfg()),
+            ),
+            "rough": (
+                "Train Go2 velocity control on rough terrain.",
+                TrainConfig(env=rough_env_cfg()),
+            ),
+        },
+        config=mjlab.TYRO_FLAGS,
+    )
+
+    from src.tasks.supermimic.training.loop import Trainer
+
     Trainer(cfg).run()
 
 

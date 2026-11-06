@@ -1,15 +1,21 @@
 """Play a Go2 SuperMimic policy or inspect the velocity task."""
 
+# ruff: noqa: E402 -- support direct execution before importing repository packages.
+
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import torch
 import tyro
 from mjlab.utils.torch import configure_torch_backends
 
-from ..eval.playback import make_playback
+from src.tasks.supermimic.eval.playback import make_playback
 
 
 @dataclass(frozen=True)

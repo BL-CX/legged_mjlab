@@ -1,10 +1,16 @@
 """Export a trained policy: python -m src.tasks.supermimic.scripts.export."""
 
+# ruff: noqa: E402 -- support direct execution before importing repository packages.
+
+import sys
 from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import tyro
 
-from ..eval.export import export_checkpoint
+from src.tasks.supermimic.eval.export import export_checkpoint
 
 
 def main(checkpoint_file: Path, output_dir: Path):
