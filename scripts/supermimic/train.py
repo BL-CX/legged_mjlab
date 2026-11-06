@@ -1,7 +1,4 @@
-"""Train SuperMimic.  Example:
-
-.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-flat --env.scene.num-envs 1024
-"""
+"""Train a registered SuperMimic task."""
 
 from __future__ import annotations
 
@@ -9,7 +6,7 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def main() -> None:
