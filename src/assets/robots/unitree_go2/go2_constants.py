@@ -32,6 +32,10 @@ GO2_ACTUATOR_HIP = BuiltinPositionActuatorCfg(
     damping=1.0,
     effort_limit=23.5,
     armature=0.01,
+    delay_min_lag=0,
+    delay_max_lag=4,
+    delay_hold_prob=0.5,
+    delay_update_period=10,
 )
 GO2_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
     target_names_expr=(".*thigh_.*",),
@@ -39,6 +43,10 @@ GO2_ACTUATOR_THIGH = BuiltinPositionActuatorCfg(
     damping=1.0,
     effort_limit=23.5,
     armature=0.01,
+    delay_min_lag=0,
+    delay_max_lag=4,
+    delay_hold_prob=0.5,
+    delay_update_period=10,
 )
 GO2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
     target_names_expr=(".*calf_.*",),
@@ -46,6 +54,10 @@ GO2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
     damping=2.0,
     effort_limit=45,
     armature=0.02,
+    delay_min_lag=0,
+    delay_max_lag=4,
+    delay_hold_prob=0.5,
+    delay_update_period=10,
 )
 
 ##
@@ -54,7 +66,7 @@ GO2_ACTUATOR_CALF = BuiltinPositionActuatorCfg(
 
 
 INIT_STATE = EntityCfg.InitialStateCfg(
-    pos=(0.0, 0.0, 0.40),
+    pos=(0.0, 0.0, 0.32),
     joint_pos={
         ".*thigh_joint": 0.9,
         ".*calf_joint": -1.8,
@@ -82,17 +94,16 @@ FEET_ONLY_COLLISION = CollisionCfg(
     solimp=(0.9, 0.95, 0.023),
 )
 
-# This enables collisions with the environment and between robot links.
-# MuJoCo's parent filter still excludes directly connected parent-child bodies.
+# This enables all collisions, excluding self collisions.
 # Foot collisions are given custom condim, friction and solimp.
 FULL_COLLISION = CollisionCfg(
     geom_names_expr=(".*_collision",),
     condim={_foot_regex: 3, ".*_collision": 1},
-    priority={_foot_regex: 1, ".*": 0},
+    priority={_foot_regex: 1, ".*": 1},
     friction={_foot_regex: (0.6,)},
     solimp={_foot_regex: (0.9, 0.95, 0.023)},
     contype=1,
-    conaffinity=1,
+    conaffinity=0,
 )
 
 ##
@@ -109,83 +120,14 @@ GO2_ARTICULATION = EntityArticulationInfoCfg(
 )
 
 
-DEFAULT_CFG = EntityCfg(
-    init_state=INIT_STATE,
-    collisions=(FULL_COLLISION,),
-    spec_fn=get_spec,
-    articulation=GO2_ARTICULATION,
-)
-
-# Delayed drives and the lower stance used for velocity control.
-DELAYED_CFG = EntityCfg(
-    init_state=EntityCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.29),
-        joint_pos={
-            ".*L_hip_joint": 0.1,
-            ".*R_hip_joint": -0.1,
-            ".*_thigh_joint": 0.9,
-            ".*_calf_joint": -1.8,
-        },
-        joint_vel={".*": 0.0},
-    ),
-    collisions=(
-        CollisionCfg(
-            geom_names_expr=(r".*_collision\d*",),
-            condim={_foot_regex: 3, r".*_collision\d*": 1},
-            priority={_foot_regex: 1, ".*": 0},
-            friction={_foot_regex: (1.0, 5e-3, 5e-4)},
-            solref=(0.01, 1.0),
-            contype=1,
-            conaffinity=1,
-        ),
-    ),
-    spec_fn=get_spec,
-    articulation=EntityArticulationInfoCfg(
-        actuators=(
-            BuiltinPositionActuatorCfg(
-                target_names_expr=(".*_hip_joint",),
-                stiffness=20.0,
-                damping=1.0,
-                effort_limit=23.7,
-                armature=0.01,
-                delay_min_lag=0,
-                delay_max_lag=4,
-                delay_hold_prob=0.5,
-                delay_update_period=10,
-            ),
-            BuiltinPositionActuatorCfg(
-                target_names_expr=(".*_thigh_joint",),
-                stiffness=20.0,
-                damping=1.0,
-                effort_limit=23.7,
-                armature=0.01,
-                delay_min_lag=0,
-                delay_max_lag=4,
-                delay_hold_prob=0.5,
-                delay_update_period=10,
-            ),
-            BuiltinPositionActuatorCfg(
-                target_names_expr=(".*_calf_joint",),
-                stiffness=40.0,
-                damping=2.0,
-                effort_limit=45.43,
-                armature=0.01,
-                delay_min_lag=0,
-                delay_max_lag=4,
-                delay_hold_prob=0.5,
-                delay_update_period=10,
-            ),
-        ),
-        soft_joint_pos_limit_factor=0.9,
-    ),
-)
-
-ACTION_SCALE = {".*_hip_joint": 0.25, ".*_thigh_joint": 0.5, ".*_calf_joint": 0.5}
-
-
-def get_go2_robot_cfg(cfg: EntityCfg = DEFAULT_CFG) -> EntityCfg:
-    """Return an independent native Go2 configuration."""
-    return deepcopy(cfg)
+def get_go2_robot_cfg() -> EntityCfg:
+    """Get a fresh Go2 robot configuration instance."""
+    return EntityCfg(
+        init_state=deepcopy(INIT_STATE),
+        collisions=(deepcopy(FULL_COLLISION),),
+        spec_fn=get_spec,
+        articulation=deepcopy(GO2_ARTICULATION),
+    )
 
 
 if __name__ == "__main__":

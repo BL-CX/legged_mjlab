@@ -19,7 +19,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.viewer import ViewerConfig
 
-from src.assets.robots.unitree_go2.go2_constants import DELAYED_CFG, get_go2_robot_cfg
+from src.assets.robots.unitree_go2.go2_constants import get_go2_robot_cfg
 
 from ...envs.mdp.commands import (
     VelocityCommandCfg,
@@ -201,7 +201,7 @@ def make_env_cfg(
         ),
     )
     scene = SceneCfg(
-        entities={"robot": get_go2_robot_cfg(DELAYED_CFG)},
+        entities={"robot": get_go2_robot_cfg()},
         terrain=terrain_map.entity_cfg(),
         sensors=sensors,
         num_envs=cfg.num_envs,
