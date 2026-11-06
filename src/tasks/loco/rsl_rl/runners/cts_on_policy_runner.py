@@ -31,6 +31,7 @@
 import time
 import os
 from collections import deque
+from datetime import timedelta
 import statistics
 
 from torch.utils.tensorboard import SummaryWriter
@@ -95,6 +96,7 @@ class CTSOnPolicyRunner:
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
+        # Index of the next policy update.
         self.current_learning_iteration = 0
 
     
@@ -119,9 +121,10 @@ class CTSOnPolicyRunner:
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
-        self.start_learning_iteration = self.current_learning_iteration
-        tot_iter = self.current_learning_iteration + num_learning_iterations
-        for it in range(self.current_learning_iteration, tot_iter):
+        start_iter = self.current_learning_iteration
+        tot_iter = start_iter + num_learning_iterations
+        log_start_time = self.tot_time
+        for it in range(start_iter, tot_iter):
             start = time.time()
             # Rollout
             with torch.inference_mode():
@@ -169,96 +172,124 @@ class CTSOnPolicyRunner:
             if self.log_dir is not None:
                 self.log(locals())
                 if it % self.save_interval == 0:
-                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
         
         if self.log_dir is not None:
-            self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+            if self.current_learning_iteration > start_iter:
+                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration - 1)))
             self.writer.flush()
 
-    def log(self, locs, width=80, pad=35):
-        self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
-        self.tot_time += locs['collection_time'] + locs['learn_time']
-        iteration_time = locs['collection_time'] + locs['learn_time']
+    def log(self, locs, width=80, pad=40):
+        """Log training information to console and TensorBoard."""
+        loss_dict = {
+            'value_function': locs['mean_value_loss'],
+            'surrogate': locs['mean_surrogate_loss'],
+            'entropy': locs['mean_entropy_loss'],
+            'latent': locs['mean_latent_loss'],
+        }
+        reward_buffers = {
+            'teacher': (locs['teacher_rewbuffer'], locs['teacher_lenbuffer']),
+            'student': (locs['student_rewbuffer'], locs['student_lenbuffer']),
+        }
+        it = locs['it']
+        collection_time = locs['collection_time']
+        learn_time = locs['learn_time']
+        iteration_time = collection_time + learn_time
+        collection_size = self.num_steps_per_env * self.env.num_envs
+        self.tot_timesteps += collection_size
+        self.tot_time += iteration_time
+        fps = int(collection_size / max(iteration_time, 1e-8))
+        mean_std = self.alg.get_policy().std.detach().mean().item()
 
-        ep_string = f''
-        if locs['ep_infos']:
-            for key in locs['ep_infos'][0]:
-                infotensor = torch.tensor([], device=self.device)
-                for ep_info in locs['ep_infos']:
-                    if key not in ep_info:
-                        continue
-                    # handle scalar and zero dimensional tensor infos
-                    if not isinstance(ep_info[key], torch.Tensor):
-                        ep_info[key] = torch.Tensor([ep_info[key]])
-                    if len(ep_info[key].shape) == 0:
-                        ep_info[key] = ep_info[key].unsqueeze(0)
-                    infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
-                value = torch.mean(infotensor)
+        # Keep native metric namespaces and include keys introduced during the rollout.
+        episode_lines = []
+        ep_infos = locs['ep_infos']
+        for key in sorted({key for ep_info in ep_infos for key in ep_info}):
+            values = []
+            for ep_info in ep_infos:
+                if key not in ep_info:
+                    continue
+                value = torch.as_tensor(ep_info[key], device=self.device).detach().float().reshape(-1)
+                if value.numel():
+                    values.append(value)
+            if not values:
+                continue
+            value = torch.cat(values).mean().item()
+            if '/' in key:
+                tag = key
+                label = key
+            else:
                 if 'terrain' in key:
-                    self.writer.add_scalar('Terrain/' + key, value, locs['it'])
+                    namespace = 'Terrain'
                 elif 'max_command' in key:
-                    self.writer.add_scalar('CommandCurriculum/' + key, value, locs['it'])
+                    namespace = 'CommandCurriculum'
                 else:
-                    self.writer.add_scalar('Episode/' + key, value, locs['it'])
-                ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
-        if 'mcp' not in self.cfg["algorithm_class_name"].lower():
-            mean_std = self.alg.model.std.mean()
-        fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
+                    namespace = 'Episode'
+                tag = f'{namespace}/{key}'
+                label = f'Mean episode {key}'
+            self.writer.add_scalar(tag, value, it)
+            episode_lines.append(f'{label + ":":>{pad}} {value:.4f}')
 
-        self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
-        self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
-        self.writer.add_scalar('Loss/entropy', locs['mean_entropy_loss'], locs['it'])
-        self.writer.add_scalar('Loss/latent', locs['mean_latent_loss'], locs['it'])
-        self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
-        if 'mcp' not in self.cfg["algorithm_class_name"].lower():
-            self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
-        self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
-        self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
-        self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
-        if len(locs['teacher_rewbuffer']) > 0:
-            self.writer.add_scalar('Train/mean_teacher_reward', statistics.mean(locs['teacher_rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_teacher_episode_length', statistics.mean(locs['teacher_lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_teacher_reward/time', statistics.mean(locs['teacher_rewbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_teacher_episode_length/time', statistics.mean(locs['teacher_lenbuffer']), self.tot_time)
-        if len(locs['student_rewbuffer']) > 0:
-            self.writer.add_scalar('Train/mean_student_reward', statistics.mean(locs['student_rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_student_episode_length', statistics.mean(locs['student_lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_student_reward/time', statistics.mean(locs['student_rewbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_student_episode_length/time', statistics.mean(locs['student_lenbuffer']), self.tot_time)
+        for key, value in loss_dict.items():
+            self.writer.add_scalar(f'Loss/{key}', value, it)
+        self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, it)
+        self.writer.add_scalar('Policy/mean_noise_std', mean_std, it)
+        self.writer.add_scalar('Perf/total_fps', fps, it)
+        self.writer.add_scalar('Perf/collection_time', collection_time, it)
+        self.writer.add_scalar('Perf/learning_time', learn_time, it)
 
-        str = f" \033[1m Learning iteration {self.current_learning_iteration}/{locs['tot_iter']} \033[0m "
+        # Completed-episode returns remain separate from per-step reward metrics.
+        reward_metrics = {}
+        for name, (rewards, lengths) in reward_buffers.items():
+            if not rewards:
+                continue
+            prefix = f'{name}_' if name else ''
+            reward_metrics[f'mean_{prefix}reward'] = statistics.mean(rewards)
+            reward_metrics[f'mean_{prefix}episode_length'] = statistics.mean(lengths)
+        for key, value in reward_metrics.items():
+            self.writer.add_scalar(f'Train/{key}', value, it)
+            self.writer.add_scalar(f'Train/{key}/time', value, int(self.tot_time))
 
-        log_string = (f"""{'#' * width}\n"""
-                      f"""{str.center(width, ' ')}\n\n"""
-                      f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                      'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                      f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
-                      f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                      f"""{'Entropy loss:':>{pad}} {locs['mean_entropy_loss']:.4f}\n"""
-                      f"""{'Latent loss:':>{pad}} {locs['mean_latent_loss']:.4f}\n""")
-        if len(locs['teacher_rewbuffer']):
-            log_string += (f"""{'Mean teacher reward:':>{pad}} {statistics.mean(locs['teacher_rewbuffer']):.2f}\n"""
-                           f"""{'Mean teacher episode length:':>{pad}} {statistics.mean(locs['teacher_lenbuffer']):.2f}\n""")
-        if len(locs['student_rewbuffer']):
-            log_string += (f"""{'Mean student reward:':>{pad}} {statistics.mean(locs['student_rewbuffer']):.2f}\n"""
-                           f"""{'Mean student episode length:':>{pad}} {statistics.mean(locs['student_lenbuffer']):.2f}\n""")
+        title = f" Learning iteration {it}/{locs['tot_iter']} "
+        lines = ['#' * width, f'\033[1m{title.center(width)}\033[0m', '']
 
-        log_string += ep_string
-        log_string += (f"""{'-' * width}\n"""
-                       f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
-                       f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-                       f"""{'Total time:':>{pad}} {self.tot_time:.2f}s\n"""
-                       f"""{'ETA:':>{pad}} {self.tot_time / (self.current_learning_iteration - self.start_learning_iteration) * (
-                               locs['tot_iter'] - locs['it']):.1f}s\n""")
-        print(log_string)
+        def row(label, value):
+            lines.append(f'{label + ":":>{pad}} {value}')
+
+        run_name = self.cfg.get('run_name')
+        if run_name:
+            row('Run name', run_name)
+        row('Total steps', self.tot_timesteps)
+        row('Steps per second', fps)
+        row('Collection time', f'{collection_time:.3f}s')
+        row('Learning time', f'{learn_time:.3f}s')
+        for key, value in loss_dict.items():
+            row(f'Mean {key} loss', f'{value:.4f}')
+        for key, value in reward_metrics.items():
+            row(key.replace('_', ' ').capitalize(), f'{value:.2f}')
+        row('Mean action noise std', f'{mean_std:.2f}')
+        lines.extend(episode_lines)
+
+        completed_iterations = it - locs['start_iter'] + 1
+        remaining_iterations = max(0, locs['tot_iter'] - it - 1)
+        session_time = self.tot_time - locs['log_start_time']
+        eta = session_time / completed_iterations * remaining_iterations
+        lines.append('-' * width)
+        row('Iteration time', f'{iteration_time:.2f}s')
+        row('Time elapsed', str(timedelta(seconds=int(self.tot_time))))
+        row('ETA', str(timedelta(seconds=int(eta))))
+        print('\n'.join(lines) + '\n')
 
     def save(self, path, infos=None):
         torch.save({
             'model_state_dict': self.alg.model.state_dict(),
             'optimizer1_state_dict': self.alg.optimizer1.state_dict(),
             'optimizer2_state_dict': self.alg.optimizer2.state_dict(),
-            'iter': self.current_learning_iteration,
+            'iter': self.current_learning_iteration - 1,
+            'next_iter': self.current_learning_iteration,
+            'total_timesteps': self.tot_timesteps,
+            'total_time': self.tot_time,
             'infos': infos,
             }, path)
 
@@ -268,7 +299,10 @@ class CTSOnPolicyRunner:
         if load_optimizer:
             self.alg.optimizer1.load_state_dict(loaded_dict['optimizer1_state_dict'])
             self.alg.optimizer2.load_state_dict(loaded_dict['optimizer2_state_dict'])
-        self.current_learning_iteration = loaded_dict['iter']
+        # Legacy checkpoints store the next update index in "iter".
+        self.current_learning_iteration = loaded_dict.get('next_iter', loaded_dict['iter'])
+        self.tot_timesteps = loaded_dict.get('total_timesteps', 0)
+        self.tot_time = loaded_dict.get('total_time', 0)
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):

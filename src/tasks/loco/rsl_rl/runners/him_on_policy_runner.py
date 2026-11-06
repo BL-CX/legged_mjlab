@@ -31,6 +31,7 @@
 import time
 import os
 from collections import deque
+from datetime import timedelta
 import statistics
 
 from torch.utils.tensorboard import SummaryWriter
@@ -105,6 +106,7 @@ class HIMOnPolicyRunner:
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
+        # Index of the next policy update.
         self.current_learning_iteration = 0
         self.logger_type = self.cfg["logger"].lower()
 
@@ -134,6 +136,7 @@ class HIMOnPolicyRunner:
 
         start_iter = self.current_learning_iteration
         tot_iter = start_iter + num_learning_iterations
+        log_start_time = self.tot_time
         for it in range(start_iter, tot_iter):
             start = time.time()
             # Rollout
@@ -186,122 +189,109 @@ class HIMOnPolicyRunner:
                 self.log(locals())
                 # Save model
                 if it % self.save_interval == 0:
-                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+                    self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             # Clear episode infos
             ep_infos.clear()
 
         # Save the final model after training
         if self.log_dir is not None:
-            self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+            if self.current_learning_iteration > start_iter:
+                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration - 1)))
+            self.writer.flush()
 
-    def log(self, locs, width=80, pad=35):
-        """Log training information to console and TensorBoard.
-
-        Enhanced version compatible with RSL-RL style logging, supporting:
-        - Dynamic episode info processing
-        - Loss dictionary iteration
-        - Detailed performance metrics
-        """
-        self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
-        self.tot_time += locs['collection_time'] + locs['learn_time']
-        iteration_time = locs['collection_time'] + locs['learn_time']
-
-        # -- Episode info
-        ep_string = ""
-        if locs['ep_infos']:
-            for key in locs['ep_infos'][0]:
-                infotensor = torch.tensor([], device=self.device)
-                for ep_info in locs['ep_infos']:
-                    # skip missing keys
-                    if key not in ep_info:
-                        continue
-                    # handle scalar and zero dimensional tensor infos
-                    if not isinstance(ep_info[key], torch.Tensor):
-                        ep_info[key] = torch.Tensor([ep_info[key]])
-                    if len(ep_info[key].shape) == 0:
-                        ep_info[key] = ep_info[key].unsqueeze(0)
-                    infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
-
-                if infotensor.numel() > 0:
-                    value = torch.mean(infotensor)
-                    # log to tensorboard with proper namespace
-                    if "/" in key:
-                        self.writer.add_scalar(key, value, locs['it'])
-                        ep_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
-                    else:
-                        self.writer.add_scalar('Episode/' + key, value, locs['it'])
-                        ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
-
-        # -- Policy metrics
-        mean_std = self.alg.actor_critic.std.mean()
-        fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
-
-        # -- Losses
+    def log(self, locs, width=80, pad=40):
+        """Log training information to console and TensorBoard."""
         loss_dict = {
             'value_function': locs['mean_value_loss'],
             'surrogate': locs['mean_surrogate_loss'],
             'estimation': locs['mean_estimation_loss'],
             'swap': locs['mean_swap_loss'],
         }
+        it = locs['it']
+        collection_time = locs['collection_time']
+        learn_time = locs['learn_time']
+        iteration_time = collection_time + learn_time
+        collection_size = self.num_steps_per_env * self.env.num_envs
+        self.tot_timesteps += collection_size
+        self.tot_time += iteration_time
+        fps = int(collection_size / max(iteration_time, 1e-8))
+        mean_std = self.alg.get_policy().std.detach().mean().item()
+
+        # Keep native metric namespaces and include keys introduced during the rollout.
+        episode_lines = []
+        ep_infos = locs['ep_infos']
+        for key in sorted({key for ep_info in ep_infos for key in ep_info}):
+            values = []
+            for ep_info in ep_infos:
+                if key not in ep_info:
+                    continue
+                value = torch.as_tensor(ep_info[key], device=self.device).detach().float().reshape(-1)
+                if value.numel():
+                    values.append(value)
+            if not values:
+                continue
+            value = torch.cat(values).mean().item()
+            if '/' in key:
+                tag = key
+                label = key
+            else:
+                if 'terrain' in key:
+                    namespace = 'Terrain'
+                elif 'max_command' in key:
+                    namespace = 'CommandCurriculum'
+                else:
+                    namespace = 'Episode'
+                tag = f'{namespace}/{key}'
+                label = f'Mean episode {key}'
+            self.writer.add_scalar(tag, value, it)
+            episode_lines.append(f'{label + ":":>{pad}} {value:.4f}')
+
         for key, value in loss_dict.items():
-            self.writer.add_scalar(f'Loss/{key}', value, locs['it'])
+            self.writer.add_scalar(f'Loss/{key}', value, it)
+        self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, it)
+        self.writer.add_scalar('Policy/mean_noise_std', mean_std, it)
+        self.writer.add_scalar('Perf/total_fps', fps, it)
+        self.writer.add_scalar('Perf/collection_time', collection_time, it)
+        self.writer.add_scalar('Perf/learning_time', learn_time, it)
 
-        self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
-        self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
+        # Completed-episode returns remain separate from per-step reward metrics.
+        reward_metrics = {}
+        if locs['rewbuffer']:
+            reward_metrics['mean_reward'] = statistics.mean(locs['rewbuffer'])
+            reward_metrics['mean_episode_length'] = statistics.mean(locs['lenbuffer'])
+        for key, value in reward_metrics.items():
+            self.writer.add_scalar(f'Train/{key}', value, it)
+            self.writer.add_scalar(f'Train/{key}/time', value, int(self.tot_time))
 
-        # -- Performance
-        self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
-        self.writer.add_scalar('Perf/collection_time', locs['collection_time'], locs['it'])
-        self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
+        title = f" Learning iteration {it}/{locs['tot_iter']} "
+        lines = ['#' * width, f'\033[1m{title.center(width)}\033[0m', '']
 
-        # -- Training metrics
-        if len(locs['rewbuffer']) > 0:
-            self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
-            if self.logger_type != "wandb":  # wandb does not support non-integer x-axis logging
-                self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
-                self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+        def row(label, value):
+            lines.append(f'{label + ":":>{pad}} {value}')
 
-        # -- Console output
-        str_header = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
+        run_name = self.cfg.get('run_name')
+        if run_name:
+            row('Run name', run_name)
+        row('Total steps', self.tot_timesteps)
+        row('Steps per second', fps)
+        row('Collection time', f'{collection_time:.3f}s')
+        row('Learning time', f'{learn_time:.3f}s')
+        for key, value in loss_dict.items():
+            row(f'Mean {key} loss', f'{value:.4f}')
+        for key, value in reward_metrics.items():
+            row(key.replace('_', ' ').capitalize(), f'{value:.2f}')
+        row('Mean action noise std', f'{mean_std:.2f}')
+        lines.extend(episode_lines)
 
-        if len(locs['rewbuffer']) > 0:
-            log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str_header.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs['collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
-            )
-            # Add losses
-            for key, value in loss_dict.items():
-                log_string += f"""{f'Mean {key} loss:':>{pad}} {value:.4f}\n"""
-            # Add rewards
-            log_string += (
-                f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
-                f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
-            )
-        else:
-            log_string = (
-                f"""{'#' * width}\n"""
-                f"""{str_header.center(width, ' ')}\n\n"""
-                f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs['collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
-            )
-            for key, value in loss_dict.items():
-                log_string += f"""{f'{key}:':>{pad}} {value:.4f}\n"""
-
-        # Add episode info
-        log_string += ep_string
-
-        # Add summary
-        log_string += (
-            f"""{'-' * width}\n"""
-            f"""{'Total timesteps:':>{pad}} {self.tot_timesteps}\n"""
-            f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n"""
-            f"""{'Time elapsed:':>{pad}} {time.strftime("%H:%M:%S", time.gmtime(self.tot_time))}\n"""
-            f"""{'ETA:':>{pad}} {self.tot_time / (locs['it'] + 1) * (
-                    locs['num_learning_iterations'] - locs['it']):.1f}s\n""")
-        print(log_string)
+        completed_iterations = it - locs['start_iter'] + 1
+        remaining_iterations = max(0, locs['tot_iter'] - it - 1)
+        session_time = self.tot_time - locs['log_start_time']
+        eta = session_time / completed_iterations * remaining_iterations
+        lines.append('-' * width)
+        row('Iteration time', f'{iteration_time:.2f}s')
+        row('Time elapsed', str(timedelta(seconds=int(self.tot_time))))
+        row('ETA', str(timedelta(seconds=int(eta))))
+        print('\n'.join(lines) + '\n')
 
     def save(self, path, infos=None):
         """Save model checkpoint.
@@ -314,7 +304,10 @@ class HIMOnPolicyRunner:
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
             'estimator_optimizer_state_dict': self.alg.actor_critic.estimator.optimizer.state_dict(),
-            'iter': self.current_learning_iteration,
+            'iter': self.current_learning_iteration - 1,
+            'next_iter': self.current_learning_iteration,
+            'total_timesteps': self.tot_timesteps,
+            'total_time': self.tot_time,
             'infos': infos,
         }
         torch.save(saved_dict, path)
@@ -322,7 +315,7 @@ class HIMOnPolicyRunner:
         # Upload model to external logging service
         if hasattr(self, 'logger_type') and self.logger_type in ["neptune", "wandb"]:
             if hasattr(self.writer, 'save_model'):
-                self.writer.save_model(path, self.current_learning_iteration)
+                self.writer.save_model(path, self.current_learning_iteration - 1)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path, map_location=self.device)
@@ -330,7 +323,10 @@ class HIMOnPolicyRunner:
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
             self.alg.actor_critic.estimator.optimizer.load_state_dict(loaded_dict['estimator_optimizer_state_dict'])
-        self.current_learning_iteration = loaded_dict['iter']
+        # Legacy checkpoints store the next update index in "iter".
+        self.current_learning_iteration = loaded_dict.get('next_iter', loaded_dict['iter'])
+        self.tot_timesteps = loaded_dict.get('total_timesteps', 0)
+        self.tot_time = loaded_dict.get('total_time', 0)
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):
