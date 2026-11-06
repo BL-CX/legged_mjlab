@@ -6,10 +6,9 @@ from copy import deepcopy
 from pathlib import Path
 
 import torch
-from mjlab.envs import ManagerBasedRlEnv
+from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.utils.wrappers import VideoRecorder
 
-from ..config.go2.env_cfg import flat_env_cfg, rough_env_cfg
 from .export import checkpoint_actor, load_policy_checkpoint
 
 
@@ -34,36 +33,27 @@ def make_playback(
     checkpoint_file=None,
     *,
     agent="trained",
-    terrain=None,
-    num_envs=1,
+    env_cfg: ManagerBasedRlEnvCfg | None = None,
+    num_envs: int | None = None,
     device="cpu",
     video=False,
     video_length=200,
-    video_height=None,
-    video_width=None,
-    no_terminations=False,
 ):
     """Construct native playback with checkpoint semantics and optional video."""
     checkpoint = load_policy_checkpoint(checkpoint_file) if agent == "trained" else None
-    if checkpoint is not None:
-        cfg = deepcopy(checkpoint["config"].env)
-        saved_terrain = "flat" if cfg.scene.terrain.terrain_type == "plane" else "rough"
-        if terrain is not None and terrain != saved_terrain:
-            raise ValueError("Playback terrain differs from the saved configuration")
-    else:
-        cfg = rough_env_cfg(play=True) if terrain == "rough" else flat_env_cfg(play=True)
-    cfg.scene.num_envs = num_envs
+    if env_cfg is None:
+        if checkpoint is None:
+            raise ValueError("Untrained playback requires an environment configuration")
+        env_cfg = checkpoint["config"].env
+    cfg = deepcopy(env_cfg)
+    if num_envs is not None:
+        cfg.scene.num_envs = num_envs
     cfg.recorders.clear()
     cfg.terminations.pop("time_out", None)
     task_cfg = cfg.commands["velocity"]
     task_cfg.play = True
     task_cfg.terrain_curriculum = False
-    task_cfg.no_terminations = no_terminations
     task_cfg.noise.add_noise = False
-    if video_height is not None:
-        cfg.viewer.height = video_height
-    if video_width is not None:
-        cfg.viewer.width = video_width
     path = Path(checkpoint_file).expanduser().resolve() if checkpoint_file is not None else None
     record_video = path is not None and video
     torch.manual_seed(cfg.seed)

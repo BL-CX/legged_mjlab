@@ -23,7 +23,7 @@ def load_policy_checkpoint(path: str | Path):
 def checkpoint_actor(checkpoint: dict):
     """Construct the saved policy at the caller's intended RNG boundary."""
     cfg = checkpoint["config"]
-    actor = Policy(cfg.policy, history_length=cfg.env.observations["history"].history_length)
+    actor = Policy(cfg.agent.policy, history_length=cfg.env.observations["history"].history_length)
     actor.load_state_dict(checkpoint["policy"], strict=True)
     return actor.eval().requires_grad_(False)
 
@@ -57,7 +57,7 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
         "normalization": {
             "in_graph": True,
             "method": "fixed_physical_scales",
-            "term_scales": checkpoint["config"].policy.obs_term_scale,
+            "term_scales": checkpoint["config"].agent.policy.obs_term_scale,
         },
         "action_joint_names": list(joint_names),
         "default_joint_positions": default_joint_positions,

@@ -1,6 +1,6 @@
 """Train SuperMimic.  Example:
 
-.venv/bin/python src/tasks/supermimic/scripts/train.py flat --env.scene.num-envs 1024
+.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-flat --env.scene.num-envs 1024
 """
 
 from __future__ import annotations
@@ -49,20 +49,18 @@ if (
 def main() -> None:
     import mjlab
     import tyro
+    from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg
 
-    from src.tasks.supermimic.config.go2.env_cfg import flat_env_cfg, rough_env_cfg
-    from src.tasks.supermimic.config.go2.rl_cfg import TrainConfig
+    from src.tasks.supermimic.training.config import SuperMimicCfg, TrainConfig
 
     cfg = tyro.extras.overridable_config_cli(
         {
-            "flat": (
-                "Train Go2 velocity control on flat terrain.",
-                TrainConfig(env=flat_env_cfg()),
-            ),
-            "rough": (
-                "Train Go2 velocity control on rough terrain.",
-                TrainConfig(env=rough_env_cfg()),
-            ),
+            task_id: (
+                f"Train {task_id}.",
+                TrainConfig(env=load_env_cfg(task_id), agent=load_rl_cfg(task_id), run_name=task_id),
+            )
+            for task_id in list_tasks()
+            if isinstance(load_rl_cfg(task_id), SuperMimicCfg)
         },
         config=mjlab.TYRO_FLAGS,
     )

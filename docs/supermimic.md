@@ -12,7 +12,8 @@ Paths below are relative to `src/tasks/supermimic/`.
 | Module | Responsibility |
 | --- | --- |
 | `config/go2/env_cfg.py` | Native flat/rough Go2 environment presets and manager configuration |
-| `config/go2/rl_cfg.py` | Go2 training defaults and the composed `TrainConfig` tree |
+| `config/go2/rl_cfg.py` | Go2 `SuperMimicCfg` learning defaults |
+| `config/go2/__init__.py` | Native MJLab task registration for Go2 training and playback |
 | `envs/state_io.py`, `envs/sim_context.py` | Simulator features and randomized context |
 | `envs/mdp/` | Velocity commands, observations, rewards, termination, terrain and progression |
 | `world_model/state_spec.py` | Go2 coordinates, tensor packing, canonical inputs, integration and error coordinates |
@@ -28,13 +29,16 @@ Paths below are relative to `src/tasks/supermimic/`.
 | `imagination/objective.py` | Reference policy objective and GAE targets |
 | `imagination/policy_trainer.py` | Actor BPTT followed by fixed-target critic minibatches |
 | `training/loop.py` | One real environment step, fractional UTD updates, summaries and checkpoints |
+| `training/config.py` | Generic `TrainConfig` environment/agent composition and `SuperMimicCfg` |
 | `training/schedule.py`, `training/distributed.py` | Reference cosine schedule and explicit gradient averaging |
 | `eval/`, `scripts/` | Playback, export, velocity evaluation and thin command entry points |
 
-The training tree owns `env`, `world_model`, `wm_trainer`, `policy`,
-`critic`, `policy_trainer` and `schedule`. Each learning component declares its
-own configuration beside its implementation. There is no flat algorithm budget
-object, separate learner facade, task registry adapter, or external driver.
+`TrainConfig` combines the native `env` configuration with an `agent`
+(`SuperMimicCfg`) and run settings. The agent owns `world_model`, `wm_trainer`,
+`policy`, `critic`, `policy_trainer`, `schedule` and action exploration noise.
+Each learning component declares its own configuration beside its implementation.
+Training, evaluation and command entry points use the registered configurations
+without importing a robot-specific preset.
 
 Robot settings live in `src/assets/robots/unitree_go2/go2_constants.py` as native
 MJLab actuator, articulation, collision and initial-state constants.
@@ -74,9 +78,30 @@ Command sampling, task noise and reward-shape parameters belong to
 `env.rewards`. The policy and recorder read history length from
 `env.observations["history"].history_length`. Replay capacity is configured as
 `env.recorders["replay"].params["capacity"]`, and training exploration noise as
-`TrainConfig.action_noise_std`. Action scale comes directly from
+`TrainConfig.agent.action_noise_std`. Action scale comes directly from
 `env.actions["joint_pos"].scale`. The MoE experts, gates, history encoding and actor
 computations remain unchanged.
+
+## Task registration
+
+Go2 presets use MJLab's native registry with task IDs `go2-supermimic-flat` and
+`go2-supermimic-rough`. Each ID registers training and playback environment
+configurations plus its `SuperMimicCfg`. The SuperMimic train/play entry points
+select registry entries with that learning configuration and run the SuperMimic
+trainer. MJLab's RSL training entry point uses its own learning runner.
+
+A robot preset follows three files under `config/<robot>/`:
+
+- `env_cfg.py` constructs native `ManagerBasedRlEnvCfg` presets.
+- `rl_cfg.py` provides a `supermimic_cfg()` learning-settings factory.
+- `__init__.py` registers those environments and learning settings with
+  `register_mjlab_task`.
+
+Repository task discovery imports these packages; there is no central robot
+dispatcher to extend. Another robot that shares the current quadruped state and
+action conventions can reuse the learning framework through its presets. A new
+morphology also needs matching state coordinates, analytic task terms and policy
+dimensions.
 
 ## Reference training protocol
 
@@ -123,12 +148,12 @@ Run from the repository root:
 
 ```bash
 .venv/bin/python src/tasks/supermimic/scripts/train.py --help
-.venv/bin/python src/tasks/supermimic/scripts/train.py flat \
+.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-flat \
   --device cuda:0 --run-name flat --env.scene.num-envs 1024
-.venv/bin/python src/tasks/supermimic/scripts/train.py rough \
+.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-rough \
   --device cuda:0 --run-name rough
-.venv/bin/python src/tasks/supermimic/scripts/train.py flat \
-  --resume /absolute/path/ckpt_latest.pt --schedule.total-iterations 400000
+.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-flat \
+  --resume /absolute/path/ckpt_latest.pt --agent.schedule.total-iterations 400000
 ```
 
 The same presets are available through `python -m src.tasks.supermimic.scripts.train`.
@@ -142,19 +167,27 @@ configuration, alongside model and optimizer states. Playback and export require
 only the checkpoint; there is no adjacent task snapshot or robot-settings copy.
 
 CPU smoke runs should use small networks, environment counts and batches, with
-`--wm-trainer.compile None --policy-trainer.compile None`. Default network sizes
+`--agent.wm-trainer.compile None --agent.policy-trainer.compile None`. Default network sizes
 and environment counts target GPU training. `torchrun` uses the reference per-rank
 GPU pinning, parameter broadcast, gradient averaging and square-root LR scaling.
 All ranks share terrain generation seeds while physics/reset seeds differ.
 
 ```bash
-.venv/bin/python -m src.tasks.supermimic.scripts.play \
+.venv/bin/python -m src.tasks.supermimic.scripts.play go2-supermimic-flat \
   --checkpoint-file /absolute/path/ckpt_latest.pt --viewer viser
-.venv/bin/python -m src.tasks.supermimic.scripts.play \
-  --agent zero --terrain rough --device cpu --steps 8
+.venv/bin/python -m src.tasks.supermimic.scripts.play go2-supermimic-rough \
+  --agent zero --device cpu --steps 8 --env.scene.num-envs 2
 .venv/bin/python -m src.tasks.supermimic.scripts.export \
   --checkpoint-file /absolute/path/ckpt_latest.pt --output-dir /absolute/path/deploy
 ```
+
+Playback uses the selected task's native playback configuration. Repeat any
+training overrides that affect policy inputs or action semantics, including
+history length and action scale. Environment overrides follow the same manager paths, such as `--env.scene.num-envs`,
+`--env.viewer.width`, `--env.viewer.height` and
+`--env.commands.velocity.no-terminations True`. The programmatic
+`make_playback(..., env_cfg=...)` helper uses the supplied native configuration;
+when omitted for a trained policy, it uses the checkpoint's native configuration.
 
 Export writes `policy.pt`, `policy.onnx` and `policy.json`, including fixed policy
 scales and the native robot's action/default-position metadata. Default deployment
@@ -165,7 +198,7 @@ samples terrain rows on reset; saved command progress remains frozen.
 ## Validation
 
 The native configuration refactor changes how task settings are constructed and
-stored. Earlier checkpoints that store dictionary configurations use their original
+stored. Checkpoints created before the native task-registration layout use their original
 checkout. Deployment policy inputs and outputs remain unchanged.
 
 Validation of the preceding tensor-view refactor used temporary scripts outside
@@ -189,6 +222,9 @@ for all 1,846 compared tensors on each terrain. A 24-step CPU run with six learn
 updates reproduces WM, MoE and critic weights bit for bit. Native configuration
 roundtrips, checkpoint continuation, playback, evaluation, dynamic-batch export
 and compiled imagination/WM gradients pass with the new configuration path.
+Registry-based training also reproduces all three model weights exactly; temporary
+additional registration confirms automatic train/play discovery and independent
+configuration overrides without changing either entry point.
 
 ## Sources
 

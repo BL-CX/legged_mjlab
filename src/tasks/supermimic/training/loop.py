@@ -14,11 +14,11 @@ from mjlab.utils.os import dump_yaml
 from mjlab.utils.torch import configure_torch_backends
 from torch.utils.tensorboard import SummaryWriter
 
-from ..config.go2.rl_cfg import TrainConfig
 from ..imagination.policy_trainer import PolicyTrainer
 from ..policy.nets import Critic, Policy
 from ..world_model.wm_trainer import WorldModelTrainer
 from ..world_model.world_model import WorldModel
+from .config import TrainConfig
 from .distributed import allreduce_mean, broadcast_params, finalize, init_distributed
 from .schedule import cosine_lr
 
@@ -26,6 +26,7 @@ from .schedule import cosine_lr
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg = deepcopy(cfg)
+        agent = cfg.agent
         self.rank, local_rank, self.world = init_distributed()
         self.is_main = self.rank == 0
         if self.world > 1:
@@ -33,9 +34,9 @@ class Trainer:
             generator = cfg.env.scene.terrain.terrain_generator
             if generator is not None and generator.seed is None:
                 generator.seed = cfg.env.seed
-            cfg.wm_trainer.lr *= self.world**0.5
-            cfg.policy_trainer.lr *= self.world**0.5
-            cfg.policy_trainer.critic_lr *= self.world**0.5
+            agent.wm_trainer.lr *= self.world**0.5
+            agent.policy_trainer.lr *= self.world**0.5
+            agent.policy_trainer.critic_lr *= self.world**0.5
         configure_torch_backends()
         env_cfg = deepcopy(cfg.env)
         env_cfg.seed += 1000 * self.rank
@@ -48,16 +49,16 @@ class Trainer:
             self.env = env = ManagerBasedRlEnv(env_cfg, device=str(self.device))
             self.command = env.command_manager.get_term("velocity")
             self.task = self.command.model
-            self.wm = WorldModel(cfg.world_model, self.task, self.device)
+            self.wm = WorldModel(agent.world_model, self.task, self.device)
             self.policy = Policy(
-                cfg.policy,
+                agent.policy,
                 history_length=env.cfg.observations["history"].history_length,
             ).to(self.device)
-            self.critic = Critic(cfg.critic).to(self.device)
+            self.critic = Critic(agent.critic).to(self.device)
             for module in (self.wm, self.policy, self.critic):
                 broadcast_params(module)
-            self.wm_trainer = WorldModelTrainer(self.wm, cfg.wm_trainer)
-            self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, cfg.policy_trainer)
+            self.wm_trainer = WorldModelTrainer(self.wm, agent.wm_trainer)
+            self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, agent.policy_trainer)
             self.recorder = env.recorder_manager.get_term("replay")
             self.buffer = self.recorder.buffer
             self.ep_reward_sum = torch.zeros(env.num_envs, device=self.device)
@@ -69,9 +70,8 @@ class Trainer:
             if self.is_main:
                 self.log_dir.mkdir(parents=True, exist_ok=True)
                 self.writer = SummaryWriter(str(self.log_dir / "tb"))
-                configuration = asdict(cfg)
-                dump_yaml(self.log_dir / "params" / "env.yaml", configuration.pop("env"))
-                dump_yaml(self.log_dir / "params" / "agent.yaml", configuration)
+                dump_yaml(self.log_dir / "params" / "env.yaml", asdict(cfg.env))
+                dump_yaml(self.log_dir / "params" / "agent.yaml", asdict(agent))
                 print(
                     f"[INFO] Logging experiment in directory: {self.log_dir}",
                     flush=True,
@@ -123,7 +123,7 @@ class Trainer:
             torch.cuda.synchronize(self.device)
 
     def run(self):
-        cfg, sch, env = self.cfg, self.cfg.schedule, self.env
+        cfg, sch, env = self.cfg.agent, self.cfg.agent.schedule, self.env
         try:
             if self.iteration >= sch.total_iterations:
                 raise ValueError("Target iteration must exceed the checkpoint iteration")

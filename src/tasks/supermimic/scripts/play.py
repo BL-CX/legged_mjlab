@@ -1,4 +1,4 @@
-"""Play a Go2 SuperMimic policy or inspect the velocity task."""
+"""Play a registered SuperMimic task with its native environment configuration."""
 
 # ruff: noqa: E402 -- support direct execution before importing repository packages.
 
@@ -11,29 +11,29 @@ from typing import Literal
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
+import mjlab
 import torch
 import tyro
+from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg
 from mjlab.utils.torch import configure_torch_backends
 
 from src.tasks.supermimic.eval.playback import make_playback
+from src.tasks.supermimic.training.config import SuperMimicCfg
 
 
 @dataclass(frozen=True)
 class PlayConfig:
     """Playback settings; use steps for a finite headless run."""
 
-    terrain: Literal["flat", "rough"] | None = None
+    env: ManagerBasedRlEnvCfg
     agent: Literal["zero", "random", "trained"] = "trained"
     checkpoint_file: Path | None = None
-    num_envs: int = 1
     device: str | None = None
     viewer: Literal["auto", "native", "viser"] = "auto"
     steps: int | None = None
     video: bool = False
     video_length: int = 200
-    video_height: int | None = None
-    video_width: int | None = None
-    no_terminations: bool = False
 
 
 def run_play(cfg: PlayConfig):
@@ -42,16 +42,12 @@ def run_play(cfg: PlayConfig):
     configure_torch_backends()
     device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     env, policy = make_playback(
-        terrain=cfg.terrain,
+        env_cfg=cfg.env,
         checkpoint_file=cfg.checkpoint_file,
         agent=cfg.agent,
-        num_envs=cfg.num_envs,
         device=device,
         video=cfg.video,
         video_length=cfg.video_length,
-        video_height=cfg.video_height,
-        video_width=cfg.video_width,
-        no_terminations=cfg.no_terminations,
     )
     try:
         if cfg.steps is not None:
@@ -73,7 +69,15 @@ def run_play(cfg: PlayConfig):
 
 
 def main():
-    run_play(tyro.cli(PlayConfig))
+    cfg = tyro.extras.overridable_config_cli(
+        {
+            task_id: (f"Play {task_id}.", PlayConfig(env=load_env_cfg(task_id, play=True)))
+            for task_id in list_tasks()
+            if isinstance(load_rl_cfg(task_id), SuperMimicCfg)
+        },
+        config=mjlab.TYRO_FLAGS,
+    )
+    run_play(cfg)
 
 
 if __name__ == "__main__":

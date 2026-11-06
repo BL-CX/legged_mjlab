@@ -1,43 +1,8 @@
-"""Go2 training defaults composed from the reference learning components."""
+"""Unitree Go2 SuperMimic learning defaults."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from mjlab.envs import ManagerBasedRlEnvCfg
-
-from ...imagination.policy_trainer import PolicyTrainerCfg
-from ...policy.nets import CriticCfg, PolicyCfg
-from ...world_model.wm_trainer import WMTrainerCfg
-from ...world_model.world_model import WorldModelCfg
-from .env_cfg import flat_env_cfg
+from ...training.config import SuperMimicCfg
 
 
-@dataclass
-class ScheduleCfg:
-    total_iterations: int = 20_000
-    updates_per_env_step: float = 0.4
-    policy_updates_per_wm_update: int = 1
-    warmup_iterations: int = 40
-    lr_final_ratio: float = 0.03
-    lr_decay_fraction: float = 250_000 / 320_000
-    log_interval: int = 50
-    checkpoint_interval: int = 4000
-    max_hours: float | None = None
-
-
-@dataclass
-class TrainConfig:
-    run_name: str = "go2_velocity"
-    log_root: Path = Path("logs/supermimic")
-    device: str = "cuda:0"
-    env: ManagerBasedRlEnvCfg = field(default_factory=flat_env_cfg)
-    action_noise_std: float = 0.1
-    world_model: WorldModelCfg = field(default_factory=WorldModelCfg)
-    wm_trainer: WMTrainerCfg = field(default_factory=WMTrainerCfg)
-    policy: PolicyCfg = field(default_factory=PolicyCfg)
-    critic: CriticCfg = field(default_factory=CriticCfg)
-    policy_trainer: PolicyTrainerCfg = field(default_factory=PolicyTrainerCfg)
-    schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
-    resume: Path | None = None
+def supermimic_cfg() -> SuperMimicCfg:
+    """Create fresh world-model and policy-learning settings for Go2."""
+    return SuperMimicCfg()
