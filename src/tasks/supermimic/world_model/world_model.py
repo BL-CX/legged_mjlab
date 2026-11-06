@@ -35,6 +35,7 @@ class WorldModel(nn.Module):
         self.heads = heads
         self.input_norm = RunningNorm(self.spec.feat_dim + self.spec.act_dim + self.spec.xi_dim)
         self.output_norm = RunningNorm(self.spec.delta_dim)
+        self._compiled_supervised = None
         self.to(device)
 
     def model_input(self, s: torch.Tensor, action: torch.Tensor, xi: torch.Tensor, recorded=None) -> torch.Tensor:
@@ -49,12 +50,20 @@ class WorldModel(nn.Module):
         self.output_norm.mean[93:97].zero_()
         self.output_norm.var[93:97].fill_(1.0)
 
-    def step(self, s: torch.Tensor, action: torch.Tensor, xi: torch.Tensor, recorded=None) -> torch.Tensor:
-        """Predict physical state, then advance the task's deterministic memory and commands."""
+    def _predict_physical(self, s: torch.Tensor, action: torch.Tensor, xi: torch.Tensor, recorded):
         inputs = self.input_norm(self.model_input(s, action, xi, recorded))
         delta = self.output_norm.unnormalize(self.dynamics(inputs))
+        physical, _, _ = self.spec.split(s)
+        return self.spec.integrate(physical, delta)
+
+    def step(self, s: torch.Tensor, action: torch.Tensor, xi: torch.Tensor, recorded=None) -> torch.Tensor:
+        """Predict physics before advancing task memory and sampled commands."""
+        if recorded is not None and self._compiled_supervised is not None:
+            physical = self._compiled_supervised(s, action, xi, recorded)
+        else:
+            physical = self._predict_physical(s, action, xi, recorded)
         state = self.spec.unpack(s, xi)
-        physical = self.spec.integrate(state.physical, delta)
+        # Supervised command sampling stays eager; imagination compiles its own full step.
         return self.spec.pack(self.heads.advance(state, action, physical))
 
     def _squared_error(self, current, predicted, target, recorded):
@@ -68,13 +77,16 @@ class WorldModel(nn.Module):
         return s_next, self._squared_error(s, s_next, s_true, recorded)
 
     def enable_compile(self, mode: str | None = "default") -> None:
+        """Compile only supervised physical prediction, leaving task sampling outside."""
         if not mode:
-            self._loss_step_fn = self._loss_step
+            self._compiled_supervised = None
             return
         # Keep the task's explicit half-to-float terrain rounding under Inductor.
         options = dict(torch._inductor.list_mode_options(mode))
         options["emulate_precision_casts"] = True
-        self._loss_step_fn = torch.compile(self._loss_step, options=options, dynamic=False)
+        self._compiled_supervised = torch.compile(
+            self._predict_physical, options=options, fullgraph=True, dynamic=False
+        )
 
     def window_loss(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor, valid=None):
         """Average per-coordinate errors over valid transitions, including partial windows."""
@@ -85,9 +97,8 @@ class WorldModel(nn.Module):
         total_state = 0.0
         err_first = None
         err_last = None
-        step_fn = getattr(self, "_loss_step_fn", None) or self._loss_step
         for j in range(k):
-            s_next, sq = step_fn(s, a_exec[j], xi, states[j + 1], states[j])
+            s_next, sq = self._loss_step(s, a_exec[j], xi, states[j + 1], states[j])
             masked_error = (sq.mean(-1) * valid[j]).sum()
             total_state = total_state + masked_error
             nse = masked_error.detach() / valid[j].sum().clamp_min(1)
