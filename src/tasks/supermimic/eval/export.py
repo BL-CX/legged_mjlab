@@ -13,11 +13,15 @@ from mjlab.utils.lab_api.string import resolve_matching_names_values
 
 from ..envs.mdp.observations import OBS_TERMS
 from ..policy.nets import Policy
+from ..training.config import CHECKPOINT_FORMAT
 
 
 def load_policy_checkpoint(path: str | Path):
     """Load weights and their native environment configuration from one file."""
-    return torch.load(Path(path).expanduser(), map_location="cpu", weights_only=False)
+    checkpoint = torch.load(Path(path).expanduser(), map_location="cpu", weights_only=False)
+    if checkpoint.get("format") != CHECKPOINT_FORMAT:
+        raise ValueError("Unsupported checkpoint format; use an aligned quadruped checkpoint")
+    return checkpoint
 
 
 def checkpoint_actor(checkpoint: dict):
@@ -38,11 +42,19 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
     robot_cfg = cfg.scene.entities["robot"]
     joint_names = Entity(robot_cfg).joint_names
     _, _, default_joint_positions = resolve_matching_names_values(robot_cfg.init_state.joint_pos, joint_names)
-    action_scales = [cfg.actions["joint_pos"].scale] * len(joint_names)
+    scale = cfg.actions["joint_pos"].scale
+    if isinstance(scale, dict):
+        # Match native action defaults and resolve scales in the robot joint order.
+        action_scales = [1.0] * len(joint_names)
+        indices, _, values = resolve_matching_names_values(scale, joint_names)
+        for index, value in zip(indices, values, strict=True):
+            action_scales[index] = value
+    else:
+        action_scales = [scale] * len(joint_names)
     iteration = checkpoint["iteration"]
     layout = [{"name": name, "width": width} for name, width in OBS_TERMS]
     information = {
-        "format": "supermimic_velocity_policy_v2",
+        "format": "supermimic_velocity_policy_v3",
         "iteration": iteration,
         "input_name": "obs_history",
         "output_name": "actions",
@@ -56,8 +68,13 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
         "history_reset": "repeat_initial_frame",
         "normalization": {
             "in_graph": True,
-            "method": "fixed_physical_scales",
-            "term_scales": checkpoint["config"].agent.policy.obs_term_scale,
+            "method": "running_mean_variance",
+            "epsilon": 1e-6,
+            "clip": 10.0,
+            "history": {name: getattr(actor.normalizer, name).tolist() for name in ("mean", "var", "count")},
+            "current_frame": {
+                name: getattr(actor.frame_normalizer, name).tolist() for name in ("mean", "var", "count")
+            },
         },
         "action_joint_names": list(joint_names),
         "default_joint_positions": default_joint_positions,

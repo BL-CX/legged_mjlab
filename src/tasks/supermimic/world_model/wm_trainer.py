@@ -1,4 +1,4 @@
-"""World-model fitting on k-step replay windows (paper Eq. 1, Table A.5)."""
+"""Fit normalized dynamics on masked, prioritized replay windows."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import torch
 
 from ..data.replay_buffer import ReplayBuffer, WindowBatch
-from ..training.distributed import allreduce_grads
 from .world_model import WorldModel
 
 
@@ -20,6 +19,8 @@ class WMTrainerCfg:
     grad_clip: float = 1.0
     weight_decay: float = 0.0
     compile: str | None = "default"
+    prioritized_fraction: float = 0.25
+    archive_fraction: float = 0.25
 
 
 class WorldModelTrainer:
@@ -34,26 +35,33 @@ class WorldModelTrainer:
             g["lr"] = lr
 
     def loss_on(self, w: WindowBatch):
-        return self.wm.window_loss(w.states, w.a_exec, w.xi)
+        return self.wm.window_loss(w.states, w.a_exec, w.xi, w.valid)
 
     def update(self, buffer: ReplayBuffer) -> dict[str, float]:
         agg: dict[str, torch.Tensor] = {}
         for _ in range(self.cfg.batches_per_update):
-            w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
+            w = buffer.sample_windows(
+                self.cfg.batch_size,
+                self.cfg.window,
+                prioritized_frac=self.cfg.prioritized_fraction,
+                archive_frac=self.cfg.archive_fraction,
+            )
             loss, m = self.loss_on(w)
             self.opt.zero_grad(set_to_none=True)
             loss.backward()
-            allreduce_grads(self.wm)
             gn = torch.nn.utils.clip_grad_norm_(self.wm.parameters(), self.cfg.grad_clip)
-            self.opt.step()
+            finite = torch.isfinite(gn)
+            if bool(finite):
+                self.opt.step()
+            m["skipped"] = (~finite).to(loss.dtype)
             m["loss"] = loss.detach()
             m["grad_norm"] = gn.detach()
             for k, v in m.items():
                 agg[k] = agg.get(k, 0.0) + v
-        return {k: float(v) / self.cfg.batches_per_update for k, v in agg.items()}
+        return {k: float(v) / self.cfg.batches_per_update for k, v in agg.items() if bool(torch.isfinite(v))}
 
     @torch.no_grad()
     def online_error(self, buffer: ReplayBuffer, n: int = 1024, k: int = 8) -> torch.Tensor:
         """k-step open-loop error on recent replay windows."""
         w = buffer.sample_windows(n, k)
-        return self.wm.rollout_error(w.states, w.a_exec, w.xi)
+        return self.wm.rollout_error(w.states, w.a_exec, w.xi, w.valid)

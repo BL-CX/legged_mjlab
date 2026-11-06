@@ -1,4 +1,4 @@
-"""One compiled imagined step: dynamics, Go2 reward, termination, and clean observation."""
+"""Compile dynamics, task reward, termination, and the next observation together."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ from ..world_model.world_model import WorldModel
 
 
 class ImagStep:
-    def __init__(self, wm: WorldModel, compile_mode: str | None = None):
+    def __init__(self, wm: WorldModel, compile_mode: str | None = None, obs_noise: bool = True):
         self.wm = wm
+        self.obs_noise = obs_noise
         self._fn = self._step
         if compile_mode:
             mode = None if compile_mode == "default" else compile_mode
@@ -23,8 +24,8 @@ class ImagStep:
         d = task.soft_termination(next_state)
         terms = task.reward_terms(state, a, next_state)
         r = task.reward_scale * sum(task.reward_weights.get(name, 0.0) * value for name, value in terms.items())
-        obs_clean = task.observe(next_state, noisy=False)
-        return s_next, r, terms, d, obs_clean
+        frame = task.observe(next_state, noisy=self.obs_noise)
+        return s_next, r, terms, d, frame
 
     def __call__(self, s, a, xi):
         return self._fn(s, a, xi)

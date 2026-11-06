@@ -1,4 +1,4 @@
-"""Reference autoregressive world model with Go2 state and analytic task heads."""
+"""Normalized autoregressive dynamics with analytic task heads."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import torch
 from torch import nn
 
 from .dynamics import DynamicsMLP
+from .normalization import RunningNorm
 
 if TYPE_CHECKING:
     from .heads import AnalyticHeads
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class WorldModelCfg:
-    hidden: tuple[int, ...] = (2048, 2048, 2048)
+    hidden: tuple[int, ...] = (1024, 1024, 1024)
 
 
 class WorldModel(nn.Module):
@@ -32,21 +33,39 @@ class WorldModel(nn.Module):
             out_dim=self.spec.delta_dim,
         )
         self.heads = heads
+        self.input_norm = RunningNorm(self.spec.feat_dim + self.spec.act_dim + self.spec.xi_dim)
+        self.output_norm = RunningNorm(self.spec.delta_dim)
         self.to(device)
+
+    def model_input(self, s: torch.Tensor, action: torch.Tensor, xi: torch.Tensor, recorded=None) -> torch.Tensor:
+        """Concatenate canonical state, executed action, and simulator context."""
+        return torch.cat((self.spec.canonical(s, recorded), action, self.spec.normalize_xi(xi)), -1)
+
+    @torch.no_grad()
+    def update_stats(self, s: torch.Tensor, action: torch.Tensor, target: torch.Tensor, xi: torch.Tensor):
+        """Update from valid real transitions, keeping contact logits at unit scale."""
+        self.input_norm.update(self.model_input(s, action, xi))
+        self.output_norm.update(self.spec.model_target(s, target))
+        self.output_norm.mean[93:97].zero_()
+        self.output_norm.var[93:97].fill_(1.0)
 
     def step(self, s: torch.Tensor, action: torch.Tensor, xi: torch.Tensor, recorded=None) -> torch.Tensor:
         """Predict physical state, then advance the task's deterministic memory and commands."""
-        feat = self.spec.canonical(s, recorded)
-        delta = self.dynamics(feat, action, self.spec.normalize_xi(xi))
+        inputs = self.input_norm(self.model_input(s, action, xi, recorded))
+        delta = self.output_norm.unnormalize(self.dynamics(inputs))
         state = self.spec.unpack(s, xi)
         physical = self.spec.integrate(state.physical, delta)
         return self.spec.pack(self.heads.advance(state, action, physical))
 
+    def _squared_error(self, current, predicted, target, recorded):
+        error = self.spec.error_vector(current, predicted, target, recorded)
+        error = error / (self.output_norm.var.sqrt() + 1e-6)
+        return error * error
+
     def _loss_step(self, s, a, xi, s_true, recorded):
-        """One autoregressive step of Eq. 1, including task error coordinates."""
+        """Predict one supervised step and its normalized coordinate errors."""
         s_next = self.step(s, a, xi, recorded)
-        e = self.spec.error_vector(s, s_next, s_true, recorded)
-        return s_next, e * e
+        return s_next, self._squared_error(s, s_next, s_true, recorded)
 
     def enable_compile(self, mode: str | None = "default") -> None:
         if not mode:
@@ -57,24 +76,26 @@ class WorldModel(nn.Module):
         options["emulate_precision_casts"] = True
         self._loss_step_fn = torch.compile(self._loss_step, options=options, dynamic=False)
 
-    def window_loss(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor):
-        """Eq. 1: sum error dimensions, then average the batch and autoregressive window."""
+    def window_loss(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor, valid=None):
+        """Average per-coordinate errors over valid transitions, including partial windows."""
         k = a_exec.shape[0]
         s = states[0]
+        if valid is None:
+            valid = torch.ones(a_exec.shape[:2], device=a_exec.device, dtype=a_exec.dtype)
         total_state = 0.0
         err_first = None
         err_last = None
         step_fn = getattr(self, "_loss_step_fn", None) or self._loss_step
         for j in range(k):
             s_next, sq = step_fn(s, a_exec[j], xi, states[j + 1], states[j])
-            total_state = total_state + sq.sum(-1).mean()
-            with torch.no_grad():
-                nse = sq.mean(-1).mean()
-                if j == 0:
-                    err_first = nse
-                err_last = nse
+            masked_error = (sq.mean(-1) * valid[j]).sum()
+            total_state = total_state + masked_error
+            nse = masked_error.detach() / valid[j].sum().clamp_min(1)
+            if j == 0:
+                err_first = nse
+            err_last = nse
             s = self.spec.teacher_force(s_next, states[j + 1])
-        loss = total_state / k
+        loss = total_state / valid.sum().clamp_min(1)
         return loss, {
             "state_loss": loss.detach(),
             "nse_1step": err_first.detach(),
@@ -82,14 +103,16 @@ class WorldModel(nn.Module):
         }
 
     @torch.no_grad()
-    def rollout_error(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor) -> torch.Tensor:
+    def rollout_error(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor, valid=None) -> torch.Tensor:
         """Open-loop normalized squared error per step, averaged over the batch."""
         k = a_exec.shape[0]
         s = states[0]
+        if valid is None:
+            valid = torch.ones(a_exec.shape[:2], device=a_exec.device, dtype=a_exec.dtype)
         out = []
         for j in range(k):
             s_next = self.step(s, a_exec[j], xi)
-            e = self.spec.error_vector(s, s_next, states[j + 1], states[j])
-            out.append((e * e).mean(-1).mean())
+            sq = self._squared_error(s, s_next, states[j + 1], states[j])
+            out.append((sq.mean(-1) * valid[j]).sum() / valid[j].sum().clamp_min(1))
             s = s_next
         return torch.stack(out)

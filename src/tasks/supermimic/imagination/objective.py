@@ -1,4 +1,4 @@
-"""Policy objective (Eq. 2) and critic GAE targets (Eq. 3)."""
+"""Survival-weighted policy objective and fixed critic lambda-return targets."""
 
 from __future__ import annotations
 
@@ -8,30 +8,32 @@ from .rollout import ImagRollout
 
 
 def policy_objective(ro: ImagRollout, terminal_values: torch.Tensor | None, gamma: float) -> torch.Tensor:
-    """J = mean_n [ sum_t gamma^t c_t r_{t+1} + gamma^H c_H V_H ] (SHAC-style; V_H keeps the gradient w.r.t. s_H).
-
-    terminal_values: (n,) critic estimate at s_H, or None for the critic-free variant.
-    """
-    H = ro.rewards.shape[0]
-    disc = gamma ** torch.arange(H, device=ro.rewards.device, dtype=ro.rewards.dtype)
-    J = (disc[:, None] * ro.survival[:-1] * ro.rewards).sum(0)
+    """Sum discounted rewards and terminal value without horizon normalization."""
+    horizon = ro.rewards.shape[0]
+    discount = gamma ** torch.arange(horizon, device=ro.rewards.device, dtype=ro.rewards.dtype)
+    objective = (discount[:, None] * ro.survival[:-1] * ro.rewards).sum(0)
     if terminal_values is not None:
-        J = J + (gamma**H) * ro.survival[-1] * terminal_values
-    return J.mean()
+        objective = objective + gamma**horizon * ro.survival[-1] * terminal_values
+    return objective.mean()
 
 
 @torch.no_grad()
 def gae_targets(
-    rewards: torch.Tensor, dhat_next: torch.Tensor, values: torch.Tensor, gamma: float, lam: float
+    rewards: torch.Tensor,
+    dhat_next: torch.Tensor,
+    values: torch.Tensor,
+    gamma: float,
+    lam: float,
+    survival: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """R_t = r_{t+1} + gamma (1 - d_{t+1}) [ (1-lam) V_{t+1} + lam R_{t+1} ],  R_H = V_H.
-
-    rewards (H, n), dhat_next (H, n) = d_{t+1}, values (H+1, n) = V_0..V_H. Returns (H, n) targets.
-    """
-    H = rewards.shape[0]
-    R = values[H].clone()
-    out = torch.empty_like(rewards)
-    for t in range(H - 1, -1, -1):
-        R = rewards[t] + gamma * (1.0 - dhat_next[t]) * ((1.0 - lam) * values[t + 1] + lam * R)
-        out[t] = R
-    return out
+    """Use cumulative survival ratios, including the baseline's low-survival clamp."""
+    horizon = rewards.shape[0]
+    if survival is None:
+        survival = torch.cat((torch.ones_like(dhat_next[:1]), (1 - dhat_next).cumprod(0)))
+    target = values[-1].clone()
+    output = torch.empty_like(rewards)
+    for step in reversed(range(horizon)):
+        continuation = survival[step + 1] / survival[step].clamp_min(1e-6)
+        target = rewards[step] + gamma * continuation * ((1 - lam) * values[step + 1] + lam * target)
+        output[step] = target
+    return output

@@ -199,6 +199,14 @@ class StateSpec:
             (robot + robot_delta, apply_pose_delta(pose, pose_change), auxiliary, contact.sigmoid(), forces), -1
         )
 
+    def model_target(self, current: Tensor, target: Tensor) -> Tensor:
+        """Return physical deltas, heading-frame pose changes, and absolute auxiliary targets."""
+        physical, _, _ = self.split(current)
+        next_physical, _, _ = self.split(target)
+        robot, pose, _ = physical.split((70, 3, 52), dim=-1)
+        next_robot, next_pose, next_auxiliary = next_physical.split((70, 3, 52), dim=-1)
+        return torch.cat((next_robot - robot, pose_delta(pose, next_pose), next_auxiliary), -1)
+
     def error_vector(self, current: Tensor, predicted: Tensor, target: Tensor, recorded: Tensor) -> Tensor:
         """Compare base-state deltas, auxiliary values, and predicted contact probabilities."""
         current_physical, _, _ = self.split(current)

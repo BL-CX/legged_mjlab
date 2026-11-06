@@ -1,4 +1,4 @@
-"""Go2 mixture-of-experts history policy and privileged critic."""
+"""Mixture-of-experts history policy and privileged critic."""
 
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..envs.mdp.observations import CRITIC_DIM, OBS_DIM, OBS_TERMS
+from ..envs.mdp.observations import CRITIC_DIM, OBS_DIM
 from ..world_model.dynamics import MLP
+from ..world_model.normalization import RunningNorm
 from ..world_model.state_spec import StateSpec
 
 
@@ -19,8 +20,6 @@ class PolicyCfg:
     expert_hidden: tuple[int, ...] = (512, 256, 256)
     latent_dim: int = 32
     actor_hidden: tuple[int, ...] = (512, 256, 128)
-    # Divide angular velocity, gravity, joint position/velocity, actions, commands, phase.
-    obs_term_scale: tuple[float, ...] = (2.0, 1.0, 1.0, 5.0, 1.0, 1.0, 1.0)
 
 
 @dataclass
@@ -59,22 +58,32 @@ class Policy(nn.Module):
         self.action_dim = StateSpec.act_dim
         self.history_length = history_length
         self.history_order = "frame_major_oldest_first"
-        frame_scale = torch.cat([torch.full((n,), 1.0 / s) for (_, n), s in zip(OBS_TERMS, cfg.obs_term_scale)])
-        self.register_buffer("scale", frame_scale.repeat(history_length))
+        self.normalizer = RunningNorm(OBS_DIM * history_length)
+        self.frame_normalizer = RunningNorm(OBS_DIM)
         self.encoder = HistoryEncoder(cfg, history_length)
         self.actor = MLP(cfg.latent_dim + OBS_DIM, cfg.actor_hidden, self.action_dim, act=nn.ELU)
 
+    @torch.no_grad()
+    def update_statistics(self, history: torch.Tensor) -> None:
+        """Update history and current-frame statistics once per real collection step."""
+        history = history.reshape(-1, self.history_length, self.observation_dim)
+        self.normalizer.update(history.reshape(-1, self.history_length * self.observation_dim))
+        self.frame_normalizer.update(history[:, -1])
+
     def forward(self, obs_hist: torch.Tensor) -> torch.Tensor:
-        history = obs_hist.reshape(-1, self.history_length * self.observation_dim) * self.scale
-        return self.actor(torch.cat([self.encoder(history), history[:, -self.observation_dim :]], dim=-1))
+        history = obs_hist.reshape(-1, self.history_length * self.observation_dim)
+        latent = self.encoder(self.normalizer(history))
+        current = self.frame_normalizer(history[:, -self.observation_dim :])
+        return self.actor(torch.cat([latent, current], dim=-1))
 
 
 class Critic(nn.Module):
-    """Value of the task's privileged feature coordinates, with fixed unit scales."""
+    """Normalize privileged features before an ELU value network."""
 
     def __init__(self, cfg: CriticCfg):
         super().__init__()
-        self.mlp = MLP(CRITIC_DIM, cfg.hidden, 1)
+        self.normalizer = RunningNorm(CRITIC_DIM)
+        self.mlp = MLP(CRITIC_DIM, cfg.hidden, 1, act=nn.ELU)
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        return self.mlp(feat).squeeze(-1)
+        return self.mlp(self.normalizer(feat)).squeeze(-1)

@@ -1,16 +1,13 @@
-"""GPU ring replay buffer laid out as [env, time].
+"""Control-step replay with recorded observation histories and rare-event windows.
 
-Each row holds the state ``s_t`` at the start of a control step together with the
-transition that followed it: clean action ``a_t``, executed action ``a_exec_t``, sim
-context ``xi_t``, reward ``r_{t+1}``, and bookkeeping flags. When an episode ends an
-extra *terminal* row holds ``s_{T+1}`` (no transition out of it) and the termination
-label of that state, so k-step windows can use it as their last target state and
-the termination head gets positive labels.
+Rows hold the state and noisy history used to choose an action. The next row is
+the transition target; reset rows remain in storage and are excluded by ``valid``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from typing import Sequence
 
 import torch
 
@@ -20,152 +17,171 @@ class WindowBatch:
     states: torch.Tensor  # (k+1, n, S)
     a_exec: torch.Tensor  # (k, n, A)
     a_clean: torch.Tensor  # (k, n, A)
-    xi: torch.Tensor  # (n, X) context at the window start (constant inside an episode)
+    xi: torch.Tensor  # (n, X), context at the window start
     reward: torch.Tensor  # (k, n)
-    done: torch.Tensor  # (k, n) termination label of states 1..k
+    done: torch.Tensor  # (k, n), physical termination labels
+    valid: torch.Tensor  # (k, n), false from the first reset onward
+
+    def index(self, ids: torch.Tensor | slice) -> WindowBatch:
+        return WindowBatch(
+            **{
+                item.name: getattr(self, item.name)[ids] if item.name == "xi" else getattr(self, item.name)[:, ids]
+                for item in fields(self)
+            }
+        )
+
+    @staticmethod
+    def concatenate(parts: Sequence[WindowBatch]) -> WindowBatch:
+        return WindowBatch(
+            **{
+                item.name: torch.cat([getattr(part, item.name) for part in parts], dim=0 if item.name == "xi" else 1)
+                for item in fields(WindowBatch)
+            }
+        )
 
 
 @dataclass
 class StartBatch:
-    state: torch.Tensor  # (n, S)
-    xi: torch.Tensor  # (n, X)
-    prev_action: torch.Tensor  # (n, A) clean action of the previous step (0 at episode start)
-    hist_states: torch.Tensor  # (hist, n, S) states s_{t-hist+1..t} (backfilled at episode start)
-    hist_actions: torch.Tensor  # (hist, n, A) clean actions a_{t-hist..t-1} aligned with hist_states' obs
+    state: torch.Tensor
+    xi: torch.Tensor
+    history: torch.Tensor  # (n, hist, D), recorded noisy observations
+
+
+class WindowArchive:
+    """Lazily allocate complete windows so replay overwrites cannot invalidate them."""
+
+    def __init__(self, capacity: int):
+        self.capacity, self.size, self.clock = capacity, 0, 0
+        self.storage: WindowBatch | None = None
+
+    @torch.no_grad()
+    def add(self, window: WindowBatch) -> None:
+        count = min(window.a_exec.shape[1], self.capacity)
+        if not count:
+            return
+        window = window.index(slice(0, count))
+        if self.storage is None:
+            storage = {}
+            for item in fields(window):
+                value = getattr(window, item.name)
+                shape = list(value.shape)
+                shape[0 if item.name == "xi" else 1] = self.capacity
+                storage[item.name] = value.new_zeros(shape)
+            self.storage = WindowBatch(**storage)
+        ids = (self.clock + torch.arange(count, device=window.states.device)) % self.capacity
+        for item in fields(WindowBatch):
+            target, source = getattr(self.storage, item.name), getattr(window, item.name)
+            target.index_copy_(0 if item.name == "xi" else 1, ids, source)
+        self.clock += count
+        self.size = min(self.size + count, self.capacity)
+
+    def sample(self, count: int) -> WindowBatch:
+        ids = torch.randint(self.size, (count,), device=self.storage.states.device)
+        return self.storage.index(ids)
 
 
 class ReplayBuffer:
+    """Time-major ring replay; collected histories are stored in float16."""
+
     def __init__(
         self,
-        num_envs: int,
-        capacity: int,
-        state_dim: int,
-        act_dim: int,
-        xi_dim: int,
+        num_envs,
+        capacity,
+        state_dim,
+        act_dim,
+        xi_dim,
         device,
+        *,
+        history_length=5,
+        observation_dim=47,
+        archive_size=100000,
+        archive_keep_prob=0.02,
+        task=None,
     ):
         self.E, self.T = num_envs, capacity
         self.device = torch.device(device)
-        E, T = num_envs, capacity
-        f = lambda *shape: torch.zeros(E, T, *shape, device=self.device)  # noqa: E731
-        self.s = f(state_dim)
-        self.a = f(act_dim)
-        self.a_exec = f(act_dim)
-        self.xi = f(xi_dim)
-        self.r = f()
-        self.done = f()
-        self.ep_id = torch.full((E, T), -1, dtype=torch.long, device=self.device)
-        self.terminal = torch.zeros(E, T, dtype=torch.bool, device=self.device)
-        self.ep_start = torch.zeros(E, T, dtype=torch.bool, device=self.device)
-        self.valid = torch.zeros(E, T, dtype=torch.bool, device=self.device)
-        self.ptr = torch.zeros(E, dtype=torch.long, device=self.device)
-        self.ep_counter = torch.zeros(E, dtype=torch.long, device=self.device)
-        self.total_rows = 0
-        self._env_ar = torch.arange(E, device=self.device)
-
-    # ------------------------------------------------------------------ writes
+        self.size = self.clock = 0
+        if capacity < 1:
+            raise ValueError("Replay capacity must be positive")
+        self.s = torch.zeros(capacity, num_envs, state_dim, device=device)
+        self.xi = torch.zeros(capacity, num_envs, xi_dim, device=device)
+        self.a = torch.zeros(capacity, num_envs, act_dim, device=device)
+        self.a_exec = torch.zeros_like(self.a)
+        self.r = torch.zeros(capacity, num_envs, device=device)
+        self.done = torch.zeros(capacity, num_envs, dtype=torch.bool, device=device)
+        self.terminated = torch.zeros_like(self.done)
+        self.histories = torch.zeros(
+            capacity, num_envs, history_length, observation_dim, device=device, dtype=torch.float16
+        )
+        self.archive = WindowArchive(archive_size)
+        self.archive_keep_prob, self.task = archive_keep_prob, task
 
     @torch.no_grad()
-    def add(self, env_ids, s, a, a_exec, xi, r, done, terminal, ep_start) -> None:
-        p = self.ptr[env_ids]
-        self.s[env_ids, p] = s
-        self.a[env_ids, p] = a
-        self.a_exec[env_ids, p] = a_exec
-        self.xi[env_ids, p] = xi
-        self.r[env_ids, p] = r
-        self.done[env_ids, p] = done
-        self.ep_id[env_ids, p] = self.ep_counter[env_ids]
-        self.terminal[env_ids, p] = terminal
-        self.ep_start[env_ids, p] = ep_start
-        self.valid[env_ids, p] = True
-        self.ptr[env_ids] = (p + 1) % self.T
-        self.total_rows += int(env_ids.numel())
+    def add(self, *, s, a, a_exec, xi, r, terminated, truncated, history):
+        slot = self.clock % self.T
+        for target, value in (
+            (self.s, s),
+            (self.a, a),
+            (self.a_exec, a_exec),
+            (self.xi, xi),
+            (self.r, r),
+            (self.terminated, terminated),
+            (self.histories, history),
+        ):
+            target[slot].copy_(value)
+        self.done[slot].copy_(terminated | truncated)
+        self.clock += 1
+        self.size = min(self.size + 1, self.T)
 
-    @torch.no_grad()
-    def end_episode(self, env_ids) -> None:
-        self.ep_counter[env_ids] += 1
+    def end_episode(self, env_ids: torch.Tensor) -> None:
+        # An explicit partial reset also cuts the preceding transition window.
+        if self.size:
+            self.done[(self.clock - 1) % self.T, env_ids] = True
 
-    @property
-    def size(self) -> int:
-        return int(self.valid.sum().item())
+    def ready(self, horizon: int) -> bool:
+        return self.size > horizon + 1
 
-    # ------------------------------------------------------------------ sampling helpers
-
-    def _rolled(self, x: torch.Tensor, j: int) -> torch.Tensor:
-        """x[:, (t + j) % T] for every t."""
-        return torch.roll(x, shifts=-j, dims=1) if j else x
-
-    @torch.no_grad()
-    def window_mask(self, k: int) -> torch.Tensor:
-        """(E,T) True where rows t..t+k are valid, same episode, and t..t+k-1 are non-terminal."""
-        ok = self.valid & ~self.terminal
-        ep0 = self.ep_id
-        for j in range(1, k + 1):
-            v = self._rolled(self.valid, j) & (self._rolled(ep0, j) == ep0)
-            if j < k:
-                v &= ~self._rolled(self.terminal, j)
-            ok &= v
-        # The row currently under the write pointer may be overwritten next; the rolled window must not
-        # wrap across the write pointer. Rows t with t + k crossing ptr are excluded by the ep_id test
-        # (new rows carry a newer ep_id) except for same-episode wraps, which are rare; exclude explicitly.
-        t = torch.arange(self.T, device=self.device)[None, :]
-        dist_to_ptr = (self.ptr[:, None] - t - 1) % self.T  # rows strictly before ptr: 0 = newest
-        ok &= dist_to_ptr >= k
-        return ok
-
-    @torch.no_grad()
-    def _sample_from_mask(self, mask: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
-        flat = mask.reshape(-1)
-        total = int(flat.sum().item())
-        if total == 0:
-            raise RuntimeError("replay buffer has no sampleable rows yet")
-        idx = torch.multinomial(flat.float(), n, replacement=True)
-        return idx // self.T, idx % self.T
-
-    @torch.no_grad()
-    def sample_windows(self, n: int, k: int) -> WindowBatch:
-        e, t = self._sample_from_mask(self.window_mask(k), n)
-        offs = torch.arange(k + 1, device=self.device)
-        tt = (t[None, :] + offs[:, None]) % self.T  # (k+1, n)
-        ee = e[None, :].expand(k + 1, n)
+    def _uniform_windows(self, count: int, horizon: int) -> WindowBatch:
+        if not self.ready(horizon):
+            raise ValueError("Replay has insufficient state slots for sampling")
+        rows = torch.randint(self.E, (count,), device=self.device)
+        logical = torch.randint(0, self.size - horizon, (count,), device=self.device)
+        starts = (self.clock - self.size + logical) % self.T
+        slots = (starts[None] + torch.arange(horizon + 1, device=self.device)[:, None]) % self.T
+        done = self.done[slots[:-1], rows[None]]
         return WindowBatch(
-            states=self.s[ee, tt],
-            a_exec=self.a_exec[ee[:-1], tt[:-1]],
-            a_clean=self.a[ee[:-1], tt[:-1]],
-            xi=self.xi[e, t],
-            reward=self.r[ee[:-1], tt[:-1]],
-            done=self.done[ee[1:], tt[1:]],
+            states=self.s[slots, rows[None]],
+            a_exec=self.a_exec[slots[:-1], rows[None]],
+            a_clean=self.a[slots[:-1], rows[None]],
+            xi=self.xi[starts, rows],
+            reward=self.r[slots[:-1], rows[None]],
+            done=self.terminated[slots[:-1], rows[None]].float(),
+            valid=(~done).cumprod(0).bool(),
         )
 
     @torch.no_grad()
-    def sample_starts(self, n: int, hist: int) -> StartBatch:
-        mask = self.valid & ~self.terminal
-        t_idx = torch.arange(self.T, device=self.device)[None, :]
-        dist_to_ptr = (self.ptr[:, None] - t_idx - 1) % self.T
-        mask &= dist_to_ptr < self.T - hist - 1  # keep history rows from being overwritten underneath
-        e, t = self._sample_from_mask(mask, n)
-        offs = torch.arange(hist, device=self.device) - (hist - 1)  # -(hist-1) .. 0
-        tt = (t[None, :] + offs[:, None]) % self.T  # (hist, n)
-        ee = e[None, :].expand(hist, n)
-        same_ep = (self.ep_id[ee, tt] == self.ep_id[e, t][None, :]) & self.valid[ee, tt]
-        # Backfill: for rows outside the episode, use the first in-episode row of the window.
-        first_ok = same_ep.float().argmax(dim=0)  # first True index per column (same_ep[-1] is always True)
-        tt_fixed = torch.where(
-            same_ep,
-            tt,
-            tt[first_ok, torch.arange(n, device=self.device)][None, :].expand(hist, n),
-        )
-        hist_states = self.s[ee, tt_fixed]
-        # Actions preceding each history state: a at row-1 if same episode else 0.
-        tprev = (tt_fixed - 1) % self.T
-        prev_ok = (
-            (self.ep_id[ee, tprev] == self.ep_id[e, t][None, :]) & self.valid[ee, tprev] & ~self.ep_start[ee, tt_fixed]
-        )
-        hist_actions = torch.where(prev_ok[..., None], self.a[ee, tprev], torch.zeros_like(self.a[ee, tprev]))
-        return StartBatch(
-            state=self.s[e, t],
-            xi=self.xi[e, t],
-            prev_action=hist_actions[-1],
-            hist_states=hist_states,
-            hist_actions=hist_actions,
-        )
+    def sample_windows(
+        self, n: int, k: int, prioritized_frac: float = 0.25, archive_frac: float = 0.25
+    ) -> WindowBatch:
+        prioritized = int(n * prioritized_frac)
+        archived = int(n * archive_frac) if self.archive.size else 0
+        uniform = n - prioritized - archived
+        parts = [self._uniform_windows(uniform, k)] if uniform else []
+        candidates = self._uniform_windows(4 * max(prioritized, 1), k)
+        scores = self.task.replay_priority(candidates)
+        worthy = self.task.archive_worthy(candidates)
+        keep = worthy & (torch.rand_like(scores) < self.archive_keep_prob)
+        self.archive.add(candidates.index(keep))
+        chosen = (scores + 1e-3 * torch.rand_like(scores)).topk(prioritized).indices
+        if prioritized:
+            parts.append(candidates.index(chosen))
+        if archived:
+            parts.append(self.archive.sample(archived))
+        return WindowBatch.concatenate(parts) if len(parts) > 1 else parts[0]
+
+    @torch.no_grad()
+    def sample_starts(self, n: int) -> StartBatch:
+        rows = torch.randint(self.E, (n,), device=self.device)
+        logical = torch.randint(self.size, (n,), device=self.device)
+        slots = (self.clock - self.size + logical) % self.T
+        return StartBatch(self.s[slots, rows], self.xi[slots, rows], self.histories[slots, rows].float())

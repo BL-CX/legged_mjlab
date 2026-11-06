@@ -145,3 +145,22 @@ class AnalyticHeads:
 
     def soft_termination(self, state: TaskState) -> Tensor:
         return soft_termination(state, self.cfg.reward.fall_angle, self.cfg.reward.fall_softness_deg)
+
+    @staticmethod
+    def _replay_events(window):
+        # Replay events use absolute foot heights, including frames after resets.
+        physical = window.states[..., :125]
+        feet = physical[..., 58:70].reshape(*physical.shape[:2], 4, 3)
+        contact = physical[..., :1] + feet[..., 2] < 0.035
+        flight = ~contact.any(-1)
+        changes = (contact[1:] != contact[:-1]).sum(-1)
+        hard_motion = physical[..., 6].abs() > 0.6
+        return changes, flight, hard_motion, ~window.valid[-1]
+
+    def replay_priority(self, window):
+        changes, flight, _, falls = self._replay_events(window)
+        return changes.sum(0).float() + flight.sum(0).float() + 4.0 * falls.float()
+
+    def archive_worthy(self, window):
+        _, flight, hard_motion, falls = self._replay_events(window)
+        return (flight.sum(0) >= 2) | hard_motion.any(0) | falls
