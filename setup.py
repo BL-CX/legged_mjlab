@@ -13,7 +13,7 @@ setup(
     package_data={
         "src.assets": ["motions/mocap_motions_go2/*.txt"],
         "src.assets.robots.unitree_go2": ["xmls/*.xml", "xmls/assets/*.obj"],
-        "src.tasks.supermimic.rl.core": ["LICENSE"],
+        "src.tasks.supermimic": ["LICENSE"],
     },
     install_requires=[
         "mjlab==1.6.0",
