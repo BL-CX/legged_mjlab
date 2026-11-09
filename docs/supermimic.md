@@ -1,189 +1,137 @@
-# Go2 SuperMimic
+# SuperMimic：世界模型与策略学习
 
-Quadruped velocity learning on MJLab. Module boundaries follow
-SuperMimic-Reproduced; learning behavior and task definitions follow
-`quadruped_lab@bac831afa62cd1bb89e0d3c7837bf1766b149d5a`.
-Neither reference repository is imported at runtime.
+[项目首页](../README.md) · [Loco](loco.md) · [PIE](pie.md)
 
-## Structure
+本项目中的 SuperMimic 用于 Go2 速度跟踪：从真实仿真数据学习动力学，在可微世界模型中展开想象轨迹，通过回报梯度优化历史策略。奖励、观测、指令和终止条件由解析任务模块计算。
 
-Paths are relative to `src/tasks/supermimic/`.
+## 观测与控制
 
-| Module | Responsibility |
+单帧为 47 维，前 45 维顺序与 loco 一致，末尾追加步态相位：
+
+| 观测项 | 维度 |
 | --- | --- |
-| `config/<robot>/env_cfg.py` | Native environment, actions, rewards, sensors and events |
-| `config/<robot>/rl_cfg.py` | Robot learning defaults |
-| `config/<robot>/__init__.py` | Register training and playback task configurations |
-| `envs/state_io.py`, `envs/sim_context.py` | Simulator state and randomized physics |
-| `envs/mdp/` | Quadruped observations, commands, rewards, terrain and termination |
-| `world_model/state_spec.py` | State coordinates, physical residuals, integration and errors |
-| `world_model/heads.py` | Analytic task advancement and replay event scores |
-| `world_model/normalization.py` | Explicit running population statistics |
-| `world_model/world_model.py` | Normalized autoregressive predictions and masked loss |
-| `world_model/wm_trainer.py` | Model sampling and optimizer updates |
-| `data/` | Actual collected histories, replay windows and rare-event archive |
-| `policy/nets.py` | History MoE, actor and privileged critic |
-| `imagination/` | Differentiable rollout, objective and actor/critic updates |
-| `training/config.py`, `training/schedule.py` | Component composition and learning schedule |
-| `training/loop.py` | Collection, updates, rollback and checkpoints |
-| `training/logger.py` | TensorBoard scalars, terminal panels and the readable run log |
-| `eval/`, `scripts/` | Playback, evaluation, deployment export and CLI entry points |
+| 速度指令 `vx, vy, yaw_rate` | 3 |
+| 机体角速度 | 3 |
+| 投影重力 | 3 |
+| `joint_pos - default_joint_pos + encoder_bias` | 12 |
+| 关节速度 | 12 |
+| 上一步未缩放动作 | 12 |
+| 步态相位 `sin, cos` | 2 |
 
-`TrainConfig` combines a native `env`, a `SuperMimicCfg` agent and run settings.
-Environment parameters stay on their managers: history length belongs to
-`env.observations["history"]`, action scales to `env.actions["joint_pos"]`, and
-replay capacity/archive settings to `env.recorders["replay"].params`.
-Each learning component declares its configuration beside its implementation.
+历史为 6 帧，包含当前帧，形状为 `[N, 6, 47]`，旧帧在前、当前帧在后；展平为 282 维。重置使用初始帧填满历史。
 
-New robot presets register native train/play configurations under `config/<robot>`.
-The entry points discover them by their `SuperMimicCfg`; there is no robot
-switch or second registry. Reusing the current task requires its quadruped state
-and action conventions. Other morphologies require corresponding task heads,
-state coordinates and policy dimensions.
+策略网络观测保持原始量纲，噪声在组装后的向量上按各项幅度添加。指令、上一步动作和步态相位不加噪，站立时相位两维均为零。策略内部的历史与当前帧分别使用运行统计归一化。
 
-## Robot and task
+世界模型的打包状态为 170 维：物理状态 125、任务记忆 42、指令 3；另带 16 维随机物理上下文。价值网络使用 262 维特权特征，其中包含物理状态、任务状态和地形信息，部署时不需要该输入。
 
-SuperMimic, loco and PIE share `src/assets/robots/unitree_go2/go2_constants.py`
-and `xmls/go2.xml`. The XML owns geometry, inertias, joint limits and named
-sites/sensors; native `EntityCfg` owns the initial state, actuators and contacts.
-There is one robot preset. Initial height is 0.29 m, left/right hip angles are
-+0.1/-0.1, thigh angle is 0.9 and calf angle is -1.8.
-Hip/thigh/calf action scales are 0.25/0.5/0.5, gains are 20/20/40 and 1/1/2,
-effort limits are 23.7/23.7/45.43, and armature is 0.01.
-Actuator delays span zero to four physics steps, with hold probability 0.5 and
-update period ten. Feet use condim 3, priority 1 and friction (1, 0.005, 0.0005);
-other colliders use condim 1 and priority 0. Ground and self contacts are enabled.
-All collision geoms use solref (0.01, 1). These shared control/contact defaults
-also apply to loco and PIE; each task still defines its own action scale.
+## 学习流程
 
-The geometry follows the public [Unitree mjlab Go2 asset](https://github.com/unitreerobotics/unitree_rl_mjlab/blob/main/src/assets/robots/unitree_go2/xmls/go2.xml),
-with foot centers and sites at x = -0.002 m as in
-[MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie/blob/main/unitree_go2/go2.xml).
-Both use cylinder head, hip and calf colliders. This intentionally replaces the
-capsules in quadruped_lab's private variant, so physical trajectories differ.
-Native actuator and collision configuration follows
-[mjlab 1.6](https://github.com/mujocolab/mjlab/blob/v1.6.0/src/mjlab/asset_zoo/robots/unitree_go1/go1_constants.py).
-Actuators are created once through mjlab; the XML adds no motors or passive joint
-damping that would change the retained PD controller.
+```text
+仿真采集 → 经验回放缓存 → 动力学模型拟合
+                ↓              ↓
+           采样起始状态 → 可微想象轨迹 → 策略与价值网络更新
+```
 
-Joint order is FL, FR, RL, RR, with hip, thigh and calf per leg. Encoder
-observations use `q - default + bias`; physical targets use
-`default + scale * action - bias`.
+### 世界模型
 
-Packed state contains 125 physical coordinates, 42 memory coordinates and three
-commands. The 16 context coordinates contain randomized physics actually used by
-the model. Actor frames have 47 coordinates, five-frame histories have 235, and
-critic features have 262. The 21 reward terms, command feedback, contact timing,
-terrain and curriculum retain the quadruped task definitions.
+世界模型使用 `1024, 1024, 1024` 的 MLP，从规范化状态特征、执行动作和物理上下文预测物理变化。物理状态经积分后，解析模块推进任务记忆与指令，并计算观测、奖励和终止概率。
 
-## Learning protocol
+监督训练使用 8 步窗口，逐步自回归预测，以归一化坐标误差的均方作为目标。重置转移及窗口内随后无效的位置通过掩码排除；任务记忆和指令采用真实记录进行教师强制。输入、输出均使用运行统计归一化，接触概率对数几率的输出统计固定为零均值、单位方差。
 
-- Prefill replay before fitting the model, then alternate two and three real
-  control steps per learning iteration (`agent.schedule.collect_steps=2.5`).
-- Update the WM from iteration one: ten batches of 2048, with eight-step windows.
-  The default network has three 1024-unit layers, ordinary output initialization,
-  and input/output RunningNorm. Contact-logit output statistics remain mean zero
-  and variance one. Loss averages normalized coordinate errors over valid
-  transitions; reset transitions and subsequent positions are masked out.
-- Start policy updates at iteration 301; ramp actor learning rate over 1000
-  iterations. The eight-expert MoE uses separate history and current-frame
-  RunningNorm. The critic uses RunningNorm and ELU.
-- Store the actual collected noisy history in float16. Sample WM batches with
-  25% priority windows and 25% archive windows when the archive is nonempty.
-  Archive capacity is 100000 and keep probability is 0.02.
-- Apply OU exploration to 25% of environments and independent Gaussian noise
-  with standard deviation 0.1 to the remainder. Both random draws cover all
-  environments before selecting the exploration rows.
-- Use horizon 32, gamma 0.99 and lambda 0.95. Optimize the complete survival-weighted
-  actor objective with terminal-value gradients. Critic targets use cumulative
-  survival ratios; fixed targets precede statistics updates and environment-major
-  minibatch flattening.
-- Decay learning rates over 30000 learning iterations to a 0.03 ratio. The default
-  target is 40000 iterations. Skip nonfinite gradient updates. Collapse rollback
-  restores the saved policy and critic, retains the WM, halves learning rates and
-  restarts the actor ramp.
+经验回放缓存保存真实采集的带噪策略网络历史，使用 float16 存储。世界模型采样默认包含 25% 优先窗口；稀有事件缓存非空时再使用 25% 稀有事件缓存窗口，其余为常规样本。
 
-Native managers own simulation, history and resets. Recorder hooks snapshot
-terminal actions and flags before automatic reset clears them. Disabling
-terminations also disables timeouts while retaining task-state refresh.
-Checkpoint publication uses one collapse guard for periodic and final saves.
-Training supports one process; distributed normalization and rollback are not
-part of this protocol.
+实现：[WorldModel](../src/tasks/supermimic/world_model/world_model.py)、[StateSpec](../src/tasks/supermimic/world_model/state_spec.py)、[ReplayBuffer](../src/tasks/supermimic/data/replay_buffer.py)。
 
-## Run
+### 历史策略
 
-From the repository root:
+历史编码器采用包含 8 个专家的混合专家结构。门控网络对专家投影加权，得到 L2 归一化的 32 维隐变量，与当前 47 维观测拼接后，输入 `512, 256, 128` 的策略网络 MLP。
+
+策略网络输出确定性动作。真实环境采集通过额外探索噪声扩展数据：默认 25% 环境使用 OU 噪声，其余使用独立高斯噪声。价值网络使用带运行统计归一化的特权 MLP 估计价值。
+
+实现：[策略与价值网络](../src/tasks/supermimic/policy/nets.py)、[真实采集循环](../src/tasks/supermimic/training/loop.py)。
+
+### 可微想象与策略目标
+
+从经验回放缓存采样状态与其真实观测历史，在世界模型中展开默认 32 步轨迹。每一步执行策略、预测动力学、计算解析奖励与软终止概率，再更新历史。
+
+令 `S_0=1`、`S_(t+1)=S_t(1-d_(t+1))`，策略最大化生存概率加权的折扣回报：
+
+$$
+J=\mathbb{E}\left[\sum_{t=0}^{H-1}\gamma^t S_t r_t+\gamma^H S_H V(x_H)\right].
+$$
+
+更新策略网络时冻结世界模型和价值网络的参数，但保留经过模型状态和末端价值输入的梯度。优化器最小化 `-J`，同时裁剪梯度范数和梯度值。该更新直接对想象轨迹求导，不使用 PPO 概率比目标。
+
+价值网络另用固定的生存概率加权 λ 回报监督，默认 `gamma=0.99`、`lambda=0.95`。训练目标在更新价值归一化统计之前计算。
+
+实现：[想象轨迹](../src/tasks/supermimic/imagination/rollout.py)、[优化目标](../src/tasks/supermimic/imagination/objective.py)、[策略训练器](../src/tasks/supermimic/imagination/policy_trainer.py)。
+
+### 默认训练日程
+
+| 参数 | 默认值 |
+| --- | --- |
+| 总学习迭代 | 40000 |
+| 每次迭代真实控制步 | 平均 2.5，交替收集 2 / 3 步 |
+| 仅拟合世界模型的预热 | 300 次迭代 |
+| 策略网络学习率爬升 | 1000 次迭代 |
+| 世界模型更新 | 每迭代 10 批，每批 2048 个 8 步窗口 |
+| 想象更新 | 每批 4096 个起点，展开 32 步 |
+| 世界模型与策略基础学习率 | `2e-4` |
+| 学习率余弦衰减 | 30000 次迭代后降至初值的 `0.03` |
+
+训练首先填充经验回放缓存，再拟合模型，第 301 次迭代开始更新策略。非有限梯度会跳过更新；连续触发跌倒保护时恢复已保存的策略与价值网络、保留世界模型、减半学习率并重启策略网络爬升。当前训练循环支持单进程。
+
+## 任务与运行
+
+当前注册 `go2-supermimic-flat` 与 `go2-supermimic-rough`。从项目根目录执行：
 
 ```bash
-.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-flat \
-  --device cuda:0 --env.scene.num-envs 1024 --run-name flat
-.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-rough \
-  --device cuda:0 --run-name rough --agent.schedule.log-interval 10
-.venv/bin/python src/tasks/supermimic/scripts/train.py go2-supermimic-rough \
-  --device cuda:0 --run-name rough \
-  --resume /absolute/path/logs/supermimic/rough/2026-11-06_10-30-00_123456/ckpt_latest.pt
-.venv/bin/python -m src.tasks.supermimic.scripts.play go2-supermimic-rough \
+python scripts/supermimic/train.py go2-supermimic-flat 
+
+python scripts/supermimic/train.py go2-supermimic-rough
+
+python scripts/supermimic/train.py go2-supermimic-flat --resume /absolute/path/ckpt_latest.pt
+```
+
+环境参数使用 `--env.*`，学习参数使用 `--agent.world-model.*`、`--agent.wm-trainer.*`、`--agent.policy-trainer.*` 和 `--agent.schedule.*`。
+
+默认日志目录为 `logs/supermimic/<task_id>/<timestamp>/`；指定 `--run-name` 后，以自定义名称代替任务编号。目录内包含 `ckpt_latest.pt`、周期检查点、`tb/`、`train.log` 和 `params/`。TensorBoard 指标包括 `wm/*`、`policy/*`、`train/*`、`time/*` 和 `perf/*`。
+
+恢复训练会读取权重、优化器与进度；经验回放缓存和物理环境重新初始化。使用非默认设置训练时，恢复命令需保留对应设置。
+
+### 回放与导出
+
+```bash
+# 加载当前任务的最新策略
+python scripts/supermimic/play.py go2-supermimic-flat
+
+# 指定检查点，使用浏览器查看
+python scripts/supermimic/play.py go2-supermimic-flat \
   --checkpoint-file /absolute/path/ckpt_latest.pt --viewer viser
-.venv/bin/python -m src.tasks.supermimic.scripts.export \
-  --checkpoint-file /absolute/path/ckpt_latest.pt --output-dir /absolute/path/deploy
+
+# 仅导出策略
+python scripts/supermimic/play.py go2-supermimic-flat \
+  --checkpoint-file /absolute/path/ckpt_latest.pt \
+  --export-only True --output-dir /absolute/path/deploy
+
+# 在 CPU 上回放指定步数，关闭导出
+python scripts/supermimic/play.py go2-supermimic-flat \
+  --device cpu --steps 100 --export False
 ```
 
-Component overrides use `--agent.world-model.*`, `--agent.wm-trainer.*`,
-`--agent.policy-trainer.*` and `--agent.schedule.*`. Iterations count learning
-updates, each with an average of 2.5 real control steps.
+未指定检查点时，按运行目录名称从新到旧查找，优先使用 `ckpt_latest.pt`，否则选择该目录编号最大的检查点。自定义训练目录时，回放需同步传入 `--log-root` 和 `--run-name`。
 
-Resume with `--resume` and the same nondefault component settings. Same-format
-resume restores weights, optimizers and progress; physical trajectories, replay,
-terrain assignments, warmup and rollback state restart as in the baseline.
-Checkpoints use `supermimic_quadruped_v3`. Earlier protocols have different
-normalization, physics and replay semantics and are rejected at loading boundaries.
-Development checkpoints that serialized the removed dedicated Go2 module require
-their original source checkout. Start a new run for the shared collision geometry.
+训练策略回放默认先导出 `policy.pt`、`policy.onnx` 和 `policy.json`，输出位于检查点旁的 `exported/<checkpoint_stem>/`。当前默认导出输入为 `[N, 282]`，策略网络的两套运行统计归一化已包含在图内；调用方负责按 JSON 中的顺序准备历史，输出为 12 维未缩放动作。
 
-CLI playback uses the registered play configuration: repeat training overrides
-that affect history length or action semantics. Programmatic
-`make_playback(checkpoint_file)` uses the checkpoint's environment unless given an
-explicit `env_cfg`. Export writes TorchScript, ONNX and JSON metadata with both
-actor normalizers and action scales resolved in joint order.
+## 代码入口
 
-## Logging
-
-Each invocation creates `log_root/run_name/YYYY-MM-DD_HH-MM-SS_microseconds/`,
-including resumed runs. Checkpoints stay in that run directory. TensorBoard
-events are under `tb/`, readable training panels and status messages are in
-`train.log`, and `params/` contains `env.yaml`, `agent.yaml` and run metadata in
-`run.yaml`. Timestamped directories separate new runs without changing the
-checkpoint protocol.
-
-`TrainingLogger` writes scalars every learning iteration. Terminal panels follow
-`agent.schedule.log_interval`, with the first and final iteration always shown;
-the CLI example above prints every ten iterations. The panel separates WM
-warmup, actor ramp, joint training and frozen-actor phases. Policy metrics appear
-after policy updates begin, so warmup does not display a zero imagined objective.
-It reports normalized WM loss, imagined objective J, critic loss, learning rates,
-actual real-step throughput, separate collection and learning times, elapsed time
-and ETA. Collection FPS uses collection time; total FPS includes the complete
-learning iteration. Session timing and ETA restart when resuming.
-
-Episode return and length average the last 100 completed episodes. Length is
-shown in both control steps and seconds. `Reward_Rate/*` contains current weighted
-reward rates before control-period scaling. Native `Episode_Reward/*` contains
-completed weighted reward sums divided by the configured maximum episode duration;
-`Episode_Termination/*` contains native termination counts. Native summaries are
-averaged over the collection steps that report them. They remain separate from
-the current reward rates and from completed episode returns.
-
-The logger writes each metric once under the name supplied by its producer,
-including the existing `wm/*`, `policy/*`, `train/*` and `time/*` names. Derived
-throughput uses `perf/*`. The terminal layout follows
-[MJLab 1.6](https://github.com/mujocolab/mjlab/blob/v1.6.0/src/mjlab/rl/runner.py)
-and [RSL-RL](https://github.com/leggedrobotics/rsl_rl/blob/main/rsl_rl/utils/logger.py)
-independently of TensorBoard tag names. The imagined objective J retains its
-original name and maximization convention.
-
-```bash
-.venv/bin/tensorboard --logdir logs/supermimic
-```
-
-Short deterministic comparisons and CPU smoke runs check behavior preservation;
-they do not establish convergence of the default 40000-iteration run.
+| 路径 | 内容 |
+| --- | --- |
+| [config/go2](../src/tasks/supermimic/config/go2) | 任务注册、环境与学习默认值 |
+| [envs/mdp](../src/tasks/supermimic/envs/mdp) | 观测、指令、奖励、地形与终止 |
+| [world_model](../src/tasks/supermimic/world_model) | 状态表示、动力学及监督更新 |
+| [data](../src/tasks/supermimic/data) | 采集记录、经验回放缓存与稀有事件缓存 |
+| [policy](../src/tasks/supermimic/policy) | 混合专家策略网络与特权价值网络 |
+| [imagination](../src/tasks/supermimic/imagination) | 想象展开、策略目标与价值网络更新 |
+| [training](../src/tasks/supermimic/training) | 训练日程、保护机制、日志与检查点 |
+| [eval](../src/tasks/supermimic/eval) | 回放、评估与导出 |
