@@ -473,6 +473,9 @@ def up_cts_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     terminations = {
         "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+        "nan_detection": TerminationTermCfg(
+            func=mdp.nan_detection
+        ),
     }
 
     ##

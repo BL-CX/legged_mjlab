@@ -405,6 +405,9 @@ def rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=mdp.illegal_contact,
             params={"sensor_name": base_ground_cfg.name, "force_threshold": 10.0},
         ),
+        "nan_detection": TerminationTermCfg(
+            func=mdp.nan_detection
+        ),
     }
 
     ##
