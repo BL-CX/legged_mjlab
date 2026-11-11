@@ -59,8 +59,8 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
         "input_name": "obs_history",
         "output_name": "actions",
         "dtype": "float32",
-        "input_shape": [None, actor.history_length * actor.observation_dim],
-        "output_shape": [None, actor.action_dim],
+        "input_shape": [1, actor.history_length * actor.observation_dim],
+        "output_shape": [1, actor.action_dim],
         "observation_dim": actor.observation_dim,
         "observation_layout": layout,
         "history_length": actor.history_length,
@@ -108,7 +108,6 @@ def export_checkpoint(checkpoint_path: str | Path, directory: str | Path):
             input_names=["obs_history"],
             output_names=["actions"],
             external_data=False,
-            dynamic_axes={"obs_history": {0: "batch"}, "actions": {0: "batch"}},
         )
         model = onnx.load(pending / "policy.onnx")
         for name, value in information.items():
