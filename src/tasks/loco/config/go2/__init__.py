@@ -10,7 +10,6 @@ from src.tasks.loco.rsl_rl.runners import (
 
 from .env_cfgs import flat_env_cfg, rough_env_cfg
 from .cts_env_cfgs import cts_flat_env_cfg, cts_rough_env_cfg
-from .up_cts_env_cfgs import up_cts_flat_env_cfg, up_cts_rough_env_cfg
 from .rl_cfg import (
     cts_runner_cfg, cts_amp_runner_cfg,
     him_amp_runner_cfg, him_runner_cfg,
@@ -114,10 +113,3 @@ register_mjlab_task(
     runner_cls=CTSAMPOnPolicyRunner,
 )
 
-register_mjlab_task(
-    task_id="go2-upcts-rough",
-    env_cfg=up_cts_rough_env_cfg(),
-    play_env_cfg=up_cts_rough_env_cfg(play=True),
-    rl_cfg=cts_runner_cfg(terrain="rough"),
-    runner_cls=CTSOnPolicyRunner,
-)
