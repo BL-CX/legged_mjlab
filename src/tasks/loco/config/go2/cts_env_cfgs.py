@@ -124,10 +124,6 @@ def cts_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             scale=1.0,
             clip=(-100.0, 100.0),
         ),
-        "phase": ObservationTermCfg(
-            func=mdp.phase,
-            params={"period": 0.6, "command_name": "twist"},
-        ),
     }
     clean_proprio = copy.deepcopy(actor_terms)
     for term in clean_proprio.values():
@@ -149,9 +145,10 @@ def cts_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "height_scan": ObservationTermCfg(
             func=envs_mdp.height_scan,
             params={
-                "sensor_name": "terrain_scan"},
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            scale=1 / terrain_scan.max_distance,
+                "sensor_name": "terrain_scan", "offset": 0.5},
+            clip=(-1.0, 1.0),
+            scale=5.0,
+            noise=Unoise(n_min=-0.02, n_max=0.02),
         ),
     }
     privileged_terms = {
@@ -170,9 +167,10 @@ def cts_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "height_scan": ObservationTermCfg(
             func=envs_mdp.height_scan,
             params={
-                "sensor_name": "terrain_scan"},
-            scale=1 / terrain_scan.max_distance,
-            noise=Unoise(n_min=-0.1, n_max=0.1),
+                "sensor_name": "terrain_scan", "offset": 0.5},
+            clip=(-1.0, 1.0),
+            scale=5.0,
+            noise=Unoise(n_min=-0.02, n_max=0.02),
         ),
     }
     observations = {
@@ -364,94 +362,61 @@ def cts_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "track_angular_velocity": RewardTermCfg(
             func=mdp.track_angular_velocity,
-            weight=1.0,
-            params={"command_name": "twist", "std": math.sqrt(0.5)},
+            weight=0.5,
+            params={"command_name": "twist", "std": math.sqrt(0.25)},
         ),
-        "body_orientation_l2": RewardTermCfg(
+
+        "joint_power": RewardTermCfg(func=mdp.joint_power, weight=-2.0e-5),
+        "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-2.5e-7),
+        "action_rate": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.01),
+        "smoothness": RewardTermCfg(func=mdp.action_acc_l2, weight=-0.01),
+        "lin_vel_z": RewardTermCfg(func=mdp.lin_vel_z_l2, weight=-2.0),
+        "ang_vel_xy": RewardTermCfg(func=mdp.ang_vel_xy_l2, weight=-0.05),
+        "orientation": RewardTermCfg(
             func=mdp.body_orientation_l2,
-            weight=-1.0,
+            weight=-0.2,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=("base_link",))},
         ),
-        "pose": RewardTermCfg(
-            func=mdp.variable_posture,
-            weight=1.0,
+        "base_height": RewardTermCfg(
+            func=mdp.base_height_reward,
+            weight=-1.0,
             params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-                "command_name": "twist",
-                "std_standing": {
-                    r".*(FR|FL|RR|RL)_hip_joint.*": 0.05,
-                    r".*(FR|FL|RR|RL)_thigh_joint.*": 0.1,
-                    r".*(FR|FL|RR|RL)_calf_joint.*": 0.15,
-                },
-                "std_walking": {
-                    r".*(FR|FL|RR|RL)_hip_joint.*": 0.15,
-                    r".*(FR|FL|RR|RL)_thigh_joint.*": 0.35,
-                    r".*(FR|FL|RR|RL)_calf_joint.*": 0.5,
-                },
-                "std_running": {
-                    r".*(FR|FL|RR|RL)_hip_joint.*": 0.15,
-                    r".*(FR|FL|RR|RL)_thigh_joint.*": 0.35,
-                    r".*(FR|FL|RR|RL)_calf_joint.*": 0.5,
-                },
-                "walking_threshold": 0.1,
-                "running_threshold": 1.5,
+                "target_height": 0.3,
+                "sensor_name": "terrain_scan",
+                "base_cfg": SceneEntityCfg("robot", body_names=("base_link",)),
             },
         ),
-        "is_terminated": RewardTermCfg(func=mdp.is_terminated, weight=-200.0),
-        "joint_acc_l2": RewardTermCfg(func=mdp.joint_acc_l2, weight=-2.5e-7),
-        "joint_pos_limits": RewardTermCfg(func=mdp.joint_pos_limits, weight=-10.0),
-        "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.05),
-        "foot_gait": RewardTermCfg(
-            func=mdp.feet_gait,
-            weight=0.5,
-            params={
-                "period": 0.6,
-                "offset": [0.0, 0.5, 0.5, 0.0],
-                "threshold": 0.56,
-                "command_threshold": 0.1,
-                "command_name": "twist",
-                "sensor_name": "feet_ground_contact",
-            }
-        ),
+
         "foot_clearance": RewardTermCfg(
             func=mdp.feet_clearance,
-            weight=-1.0,
+            weight=-0.01,
             params={
-                "target_height": 0.10,
+                "target_height": -0.20,
                 "command_name": "twist",
                 "command_threshold": 0.1,
-                "asset_cfg": SceneEntityCfg("robot", site_names=(_FOOT_NAMES)),
+                "asset_cfg": SceneEntityCfg("robot", site_names=_FOOT_NAMES),
             },
         ),
-        "foot_slip": RewardTermCfg(
-            func=mdp.feet_slip,
-            weight=-0.25,
-            params={
-                "sensor_name": "feet_ground_contact",
-                "command_name": "twist",
-                "command_threshold": 0.1,
-                "asset_cfg": SceneEntityCfg("robot", site_names=(_FOOT_NAMES)),
-            },
-        ),
-        "soft_landing": RewardTermCfg(
-            func=mdp.soft_landing,
-            weight=-1e-3,
-            params={
-                "sensor_name": "feet_ground_contact",
-                "command_name": "twist",
-                "command_threshold": 0.1,
-            },
-        ),
-        "stand_still": RewardTermCfg(
-            func=mdp.stand_still,
-            weight=-1.0,
-            params={
-                "command_name": "twist",
-                "command_threshold": 0.1,
-                "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-            },
-        ),
-  }
+        # "foot_slip": RewardTermCfg(
+        #     func=mdp.feet_slip,
+        #     weight=-0.25,
+        #     params={
+        #         "sensor_name": "feet_ground_contact",
+        #         "command_name": "twist",
+        #         "command_threshold": 0.1,
+        #         "asset_cfg": SceneEntityCfg("robot", site_names=_FOOT_NAMES),
+        #     },
+        # ),
+        # "stand_still": RewardTermCfg(
+        #     func=mdp.stand_still,
+        #     weight=-1.0,
+        #     params={
+        #         "command_name": "twist",
+        #         "command_threshold": 0.1,
+        #         "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+        #     },
+        # ),
+    }
 
     ##
     # Terminations
