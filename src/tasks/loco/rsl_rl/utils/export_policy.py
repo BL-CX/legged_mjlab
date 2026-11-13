@@ -107,7 +107,6 @@ def export_policy_as_onnx(
         verbose=verbose,
         input_names=["obs_history"],
         output_names=["actions"],
-        dynamic_axes={"obs_history": {0: "batch"}, "actions": {0: "batch"}},
         dynamo=False,
     )
     print(f"[INFO] Exported ONNX policy to: {path / filename}")
